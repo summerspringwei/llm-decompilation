@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assembly and LLVM IR Viewer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Assembly and LLVM IR Viewer</h1>
+        <div class="input-container">
+            <input type="number" id="idx-input" placeholder="Enter index" min="0">
+            <button id="load-button">Load Content</button>
+        </div>
+        <div class="status-container">
+            <div class="status-group">
+                <h3>Compilation Status</h3>
+                <div id="compile-status-container" class="status-items"></div>
+            </div>
+            <div class="status-group">
+                <h3>Execution Status</h3>
+                <div id="execution-status-container" class="status-items"></div>
+            </div>
+        </div>
+        <div class="grid-container">
+            <!-- First Row: Assembly -->
+            <div class="grid-row">
+                <div class="editor-box">
+                    <h2>Original Assembly</h2>
+                    <div id="original-asm-container" class="editor-container"></div>
+                </div>
+                <div class="editor-box">
+                    <h2>Predicted Assembly</h2>
+                    <div id="predicted-asm-container" class="editor-container"></div>
+                </div>
+            </div>
+            <!-- Second Row: LLVM IR -->
+            <div class="grid-row">
+                <div class="editor-box">
+                    <h2>Original LLVM IR</h2>
+                    <div id="original-ir-container" class="editor-container"></div>
+                </div>
+                <div class="editor-box">
+                    <h2>Predicted LLVM IR</h2>
+                    <div id="predicted-ir-container" class="editor-container"></div>
+                </div>
+            </div>
+        </div>
+        <!-- Raw Message Box -->
+        <div class="raw-message-box">
+            <h2>Raw Message Content</h2>
+            <div id="raw-message-container" class="editor-container"></div>
+        </div>
+    </div>
+
+    <!-- Monaco Editor -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.36.1/min/vs/loader.min.js"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html> 

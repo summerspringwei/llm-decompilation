@@ -1,0 +1,231 @@
+body {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    margin: 0;
+    padding: 20px;
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+}
+
+.container {
+    max-width: 1800px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+h1 {
+    color: #d4d4d4;
+    text-align: center;
+    margin-bottom: 20px;
+    font-weight: 300;
+}
+
+h2 {
+    color: #d4d4d4;
+    margin: 0 0 10px 0;
+    font-size: 1.2em;
+    font-weight: 400;
+}
+
+.input-container {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    justify-content: center;
+    align-items: center;
+}
+
+#idx-input {
+    padding: 8px 12px;
+    font-size: 16px;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    background-color: #252526;
+    color: #d4d4d4;
+    width: 150px;
+}
+
+#load-button {
+    padding: 8px 16px;
+    font-size: 16px;
+    background-color: #0e639c;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+#load-button:hover {
+    background-color: #1177bb;
+}
+
+.status-container {
+    display: flex;
+    gap: 40px;
+    margin-bottom: 20px;
+    justify-content: center;
+    align-items: flex-start;
+}
+
+.status-group {
+    text-align: center;
+}
+
+.status-group h3 {
+    margin: 0 0 10px 0;
+    font-size: 16px;
+    color: #d4d4d4;
+    font-weight: normal;
+}
+
+.status-items {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 14px;
+    color: #d4d4d4;
+    background-color: #2d2d2d;
+    padding: 5px 10px;
+    border-radius: 4px;
+}
+
+.status-item i {
+    font-size: 16px;
+}
+
+.status-item i.fa-check {
+    color: #4CAF50;
+}
+
+.status-item i.fa-times {
+    color: #f44336;
+}
+
+.status-item i.fa-question {
+    color: #9e9e9e;
+}
+
+.test-number {
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+    transition: background-color 0.2s;
+}
+
+.test-number:hover {
+    background-color: #3d3d3d;
+}
+
+.test-number.selected {
+    background-color: #0e639c;
+    color: white;
+}
+
+.grid-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.grid-row {
+    display: flex;
+    gap: 20px;
+    height: 600px;
+}
+
+.editor-box {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background-color: #252526;
+    border-radius: 4px;
+    padding: 15px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.editor-container {
+    flex: 1;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+#editor-container {
+    height: 600px;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.CodeMirror {
+    height: 600px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    border: none;
+}
+
+/* VS Code-like scrollbar */
+.CodeMirror-scrollbar-filler {
+    background-color: transparent;
+}
+
+.CodeMirror-simplescroll-horizontal,
+.CodeMirror-simplescroll-vertical {
+    background-color: #1e1e1e;
+}
+
+.CodeMirror-simplescroll-horizontal div,
+.CodeMirror-simplescroll-vertical div {
+    background-color: #424242;
+    border: none;
+    border-radius: 10px;
+}
+
+/* Active line highlight */
+.CodeMirror-activeline-background {
+    background-color: #2a2d2e !important;
+}
+
+/* Selection highlight */
+.CodeMirror-selected {
+    background-color: #264f78 !important;
+}
+
+/* Matching brackets */
+.CodeMirror-matchingbracket {
+    color: #ffd700 !important;
+    font-weight: bold;
+}
+
+.raw-message-box {
+    margin-top: 20px;
+    background-color: #1e1e1e;
+    border-radius: 8px;
+    padding: 15px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    height: 600px;
+    display: flex;
+    flex-direction: column;
+}
+
+.raw-message-box h2 {
+    color: #fff;
+    margin: 0 0 10px 0;
+    font-size: 1.2em;
+}
+
+.raw-message-box .editor-container {
+    flex: 1;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    overflow: hidden;
+} 
