@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-
+import os
+import pickle
 import torch
 from vllm import LLM
 from tqdm import tqdm
-from datasets import load_from_disk
+from datasets import load_from_disk, load_dataset
 from qdrant_client import QdrantClient  
 from qdrant_client.models import Distance, VectorParams, PointStruct
-import os
+
+from utils.preprocessing_assembly import preprocessing_assembly
+from analysis.analyze_exebench_dataset import prepare_dataset
 
 def setup_cuda_environment():
     """Setup CUDA environment to avoid MPS conflicts."""
@@ -35,23 +38,23 @@ def load_embedding_model():
     if cuda_available:
         # Use GPU with vLLM
         model = LLM(
-            model="/home/xiachunwei/Datasets/Models/Qwen3-Embedding-8B", 
+            model="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B", 
             task="embed",
-            gpu_memory_utilization=0.8,
-            max_model_len=512
+            gpu_memory_utilization=0.95,
+            max_model_len=32000
         )
     else:
         # Use CPU with vLLM
         model = LLM(
-            model="/home/xiachunwei/Datasets/Models/Qwen3-Embedding-8B", 
+            model="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B", 
             task="embed",
             gpu_memory_utilization=0.0,  # Force CPU usage
-            max_model_len=512
+            max_model_len=32000
         )
     
     return model
 
-def get_embeddings(texts, model, batch_size=16):
+def get_embeddings(texts, model, batch_size=64):
     """Generate embeddings for a list of texts using vLLM."""
     embeddings = []
     
@@ -65,7 +68,7 @@ def get_embeddings(texts, model, batch_size=16):
     
     return embeddings
 
-def build_qdrant_database(dataset_path, collection_name="assembly_code"):
+def build_qdrant_database(dataset_path, collection_name="assembly_code", batch_size = 64):
     """Build Qdrant database from the dataset."""
     
     # Load dataset
@@ -125,7 +128,7 @@ def build_qdrant_database(dataset_path, collection_name="assembly_code"):
     
     # Generate embeddings
     print("Generating embeddings...")
-    embeddings = get_embeddings(assembly_texts, model)
+    embeddings = get_embeddings(assembly_texts, model, batch_size)
     
     # Prepare points for Qdrant
     points = []
@@ -136,23 +139,25 @@ def build_qdrant_database(dataset_path, collection_name="assembly_code"):
             payload=metadata
         )
         points.append(point)
-    
+    pickle.dump(points, open("points.pkl", "wb"))
     # Upload to Qdrant
     print("Uploading to Qdrant...")
-    client.upsert(
-        collection_name=collection_name,
-        points=points
-    )
+    
+    for i in range(0, len(points), batch_size):
+        batch_points = points[i:i+batch_size]
+        client.upsert(
+            collection_name=collection_name,
+            points=batch_points
+        )
+        print(f"Inserted {i+batch_size} points")
     
     print(f"Successfully uploaded {len(points)} points to Qdrant collection: {collection_name}")
     return client, collection_name
 
-def search_similar_records(client, collection_name, query_record, top_k=3):
+
+def search_similar_records(client, collection_name, model, query_record, top_k=3):
     """Search for similar records in the database."""
-    
-    # Load embedding model
-    model = load_embedding_model()
-    
+
     # Extract assembly code from query record
     if "asm" in query_record and "code" in query_record["asm"] and len(query_record["asm"]["code"]) > 0:
         query_assembly = query_record["asm"]["code"][-1]
@@ -172,16 +177,57 @@ def search_similar_records(client, collection_name, query_record, top_k=3):
     
     return search_results
 
-def main():
+
+def build_exebench_qrand_database(dataset_dir: str = "/data1/xiachunwei/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff"):
+    for idx in range(8):
+        sub_dataset_path = os.path.join(dataset_dir, f"train_synth_rich_io_filtered_{idx}_llvm_extract_func_ir_assembly_O2_llvm_diff")
+        collection_name = f"train_synth_rich_io_filtered_{idx}"
+        client, collection_name = build_qdrant_database(sub_dataset_path, collection_name)
+        print(f"Built database for {collection_name}")
+    
+
+
+def count_exebench_dataset_similarity(dataset, client, model):
+    count = 0
+    for record in dataset:
+        search_results = search_similar_records(client, "assembly_code", model, record, top_k=1)
+        print("="*50)
+        print(record["path"])
+        for i, result in enumerate(search_results, 1):
+            print(f"\n--- Result {i} (Score: {result.score:.4f}) ---")
+            if result.score > 0.99:
+                print(f"Similar record: {result.payload.get('path', 'N/A')}")
+                print(f"Similarity score: {result.score:.4f}")
+                count += 1
+                break
+    return count
+
+
+def main_count_exebench_dataset_similarity():
+    eval_data_path ='/data1/xiachunwei/slade_artifact_cgo24_second/eval_data/exebench',
+    num_proc = 80
+    valid_synth = load_dataset(eval_data_path, split='valid_synth')
+    test_synth = load_dataset(eval_data_path, split='test_synth')
+    valid_synth = prepare_dataset(valid_synth, num_proc)
+    test_synth = prepare_dataset(test_synth, num_proc)
+    client = QdrantClient("localhost", port=6333)
+    model = load_embedding_model()
+    valid_synth_count = count_exebench_dataset_similarity(valid_synth, client, model)
+    test_synth_count = count_exebench_dataset_similarity(test_synth, client, model)
+    print(f"Valid synth count: {valid_synth_count}")
+    print(f"Test synth count: {test_synth_count}")
+
+
+def test_build_database_and_search():
     # Dataset path
-    dataset_path = "/home/xiachunwei/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff/train_synth_rich_io_filtered_0_llvm_extract_func_ir_assembly_O2_llvm_diff"
-    
+    dataset_path = "/data1/xiachunwei/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff/train_synth_rich_io_filtered_0_llvm_extract_func_ir_assembly_O2_llvm_diff"
+    collection_name = "assembly_code"
     # Build database
-    client, collection_name = build_qdrant_database(dataset_path)
-    
+    client, collection_name = build_qdrant_database(dataset_path, collection_name)
+    # client = QdrantClient("localhost", port=6333)
     # Load a sample record for testing
     dataset = load_from_disk(dataset_path)
-    sample_record = dataset[0]  # Use first record as query
+    sample_record = dataset[1000]  # Use first record as query
     
     print("\n" + "="*50)
     print("SAMPLE QUERY RECORD:")
@@ -193,14 +239,46 @@ def main():
     print("\n" + "="*50)
     print("SEARCHING FOR SIMILAR RECORDS:")
     search_results = search_similar_records(client, collection_name, sample_record, top_k=3)
-    
+    print(sample_record["asm"]["code"][-1])
     for i, result in enumerate(search_results, 1):
         print(f"\n--- Result {i} (Score: {result.score:.4f}) ---")
         print(f"ID: {result.id}")
         print(f"Path: {result.payload.get('path', 'N/A')}")
-        print(f"Function: {result.payload.get('fname', 'N/A')}")
-        print(f"Target: {result.payload.get('target', 'N/A')}")
-        print(f"Assembly code preview: {result.payload.get('assembly_code', 'N/A')[:200]}...")
+        record = dataset[result.id]
+        print((record["asm"]["code"][-1]))
+        # print(f"Function: {result.payload.get('fname', 'N/A')}")
+        # print(f"Target: {result.payload.get('target', 'N/A')}")
+        # print(f"Assembly code preview: {result.payload.get('assembly_code', 'N/A')[:200]}...")
+
+
+
+def test_query():
+    client = QdrantClient("localhost", port=6333)
+    path = "/data1/xiachunwei/Datasets/filtered_exebench/sampled_dataset_without_loops_164"
+    sample_record = load_from_disk(path).select(range(3))
+
+    query_dataset_path = "/data1/xiachunwei/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff/train_synth_rich_io_filtered_0_llvm_extract_func_ir_assembly_O2_llvm_diff"
+    query_dataset = load_from_disk(query_dataset_path)
+    # Load embedding model
+    model = load_embedding_model()
+    for record in sample_record:
+        search_results = search_similar_records(client, "assembly_code", model, record, top_k=1)
+        print("="*50)
+        print(record["path"])
+        print(preprocessing_assembly(record["asm"]["code"][-1]))
+        for i, result in enumerate(search_results, 1):
+            print(f"\n--- Result {i} (Score: {result.score:.4f}) ---")
+            print(f"ID: {result.id}")
+            print(f"Path: {result.payload.get('path', 'N/A')}")
+            query_record = query_dataset[result.id]
+            print(preprocessing_assembly(query_record["asm"]["code"][-1]))
+
+
 
 if __name__ == "__main__":
-    main() 
+    # main() 
+    # test_build_database_and_search()
+    # test_exebench_dataset_similarity()
+    # test_query()
+    # build_exebench_qrand_database()
+    main_count_exebench_dataset_similarity()
