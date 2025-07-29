@@ -23,7 +23,7 @@ try:
     if which_cmd.returncode == 0:
         info_binary = which_cmd.stdout.decode('utf-8').strip()
     else:
-        info_binary = "/home/xiachunwei/Software/llvm-project/mybuilddir/bin/llvm-parser-checker"
+        info_binary = "/data1/xiachunwei/Software/llvm-project/mybuilddir/bin/llvm-parser-checker"
 except:
     # Keep default value if which command fails
     pass
@@ -43,15 +43,47 @@ def filter_cannot_parse(record):
 
 def map_func_info(record):
     with tempfile.NamedTemporaryFile(delete=True) as f:
-        f.write(record['llvm_ir']['code'][-1].encode("utf-8"))
-        f.flush()
-        cmd = [info_binary, f.name]
-        cmd_out = subprocess.run(cmd, stdout=subprocess.PIPE)
-        llvm_ir_info = cmd_out.stdout.decode("utf-8")
-        out = json.loads(llvm_ir_info)
-        record['func_info'] = out
-        tokenized_question = tokenizer(record['asm']['code'][-1])
-        record['token_length'] = len(tokenized_question["input_ids"])
+        try:
+            f.write(record['llvm_ir']['code'][-1].encode("utf-8"))
+            f.flush()
+            cmd = [info_binary, f.name]
+            cmd_out = subprocess.run(cmd, stdout=subprocess.PIPE)
+            llvm_ir_info = cmd_out.stdout.decode("utf-8")
+            out = json.loads(llvm_ir_info)
+            # Set default values for any potentially missing fields
+            
+            if out is None or 'functions' not in out:
+                print(record['llvm_ir']['code'][-1])
+                print("error_ir_info:", llvm_ir_info)
+                out = {
+                    'functions': [{
+                        'called_functions': [],
+                        'has_defined_structs': False,
+                        'has_globals': False,
+                        'name': '',
+                        'num_loops': 0,
+                        'struct_args': False,
+                        'unused_args': []
+                    }]
+                }
+        except Exception as e:
+            print(e)
+            out = {
+                'functions': [{
+                    'called_functions': [],
+                    'has_defined_structs': False,
+                    'has_globals': False,
+                    'name': '',
+                    'num_loops': 0,
+                    'struct_args': False,
+                    'unused_args': []
+                }]
+            }
+        
+        finally:
+            record['func_info'] = out
+            tokenized_question = tokenizer(record['asm']['code'][-1])
+            record['token_length'] = len(tokenized_question["input_ids"])
     
         return record
 

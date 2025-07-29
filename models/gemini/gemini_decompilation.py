@@ -19,10 +19,17 @@ logging.basicConfig(
     '%(asctime)s - %(filename)s: %(lineno)d - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 GENERAL_INIT_PROMPT = """Please decompile the following assembly code to LLVM IR
     and please place the final generated LLVM IR code between ```llvm and ```: {asm_code} 
     Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once."""
 LLM4COMPILE_PROMPT = "Disassemble this code to LLVM IR: <code>{asm_code} \n</code>"
+
+SIMILAR_RECORD_PROMPT = """Please decompile the following assembly code to LLVM IR
+    and please place the final generated LLVM IR code between ```llvm and ```: {asm_code}
+    Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
+    Here is a example of the similar assembly code and the corresponding LLVM IR: {similar_asm_code} {similar_llvm_ir}
+    """
 
 # Service config: Key: model name, Value: (client, model_name)
 
@@ -96,6 +103,14 @@ def huoshan_deepseek_r1_batch(client, prompt_list: list[str]):
 
 
 def prepare_prompt(record, remove_comments: bool = True):
+    asm_code = record["asm"]["code"][-1]
+    asm_code = preprocessing_assembly(asm_code,
+                                      remove_comments=remove_comments)
+    prompt = input_prompt.format(asm_code=asm_code)
+    return prompt
+
+
+def prepare_prompt_from_similar_record(record, similar_record, remove_comments: bool = True):
     asm_code = record["asm"]["code"][-1]
     asm_code = preprocessing_assembly(asm_code,
                                       remove_comments=remove_comments)

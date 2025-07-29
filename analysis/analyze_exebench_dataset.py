@@ -68,7 +68,7 @@ def map_func_to_llvm_ir(record):
                 if len(func_info['functions']) == 0:
                     print(cpp_code)
         
-        # Generate LLVM IR with O2 to help extract function info
+        # Generate LLVM IR with O0 to help extract function info
         with tempfile.NamedTemporaryFile(delete=True, suffix=".ll") as fll:
             cmd = f"clang -std=c11 -S -Wno-int-conversion -emit-llvm -O0 {fcpp.name} -o {fll.name}"
             ret = subprocess.run(cmd, shell=True)
@@ -80,6 +80,41 @@ def map_func_to_llvm_ir(record):
                 with open(fll.name, "r") as f:
                     record["llvm_ir_X86_O0"] = f.read()
     return record
+
+
+def filter_func_to_llvm_ir(record):
+    cpp_code = record["synth_deps"] + "\n" + remove_static_from_function(record["func_def"])
+    record["llvm_ir"] = {}
+    with tempfile.NamedTemporaryFile(delete=True, suffix=".c") as fcpp:
+        cpp_code = remove_static_from_function(cpp_code)
+        fcpp.write(cpp_code.encode('utf-8'))
+        fcpp.flush()
+        with tempfile.NamedTemporaryFile(delete=True, suffix=".ll") as fll:
+            cmd = f"clang -std=c11 -S -Wno-int-conversion -emit-llvm {OPT_LEVEL} {fcpp.name} -o {fll.name}"
+            ret = subprocess.run(cmd, shell=True)
+            if ret.returncode != 0:
+                print(f"Error: {cmd}")
+                os.system(f"touch {fll.name}")
+                record["llvm_ir"]['code'] = [""]
+            else:
+                with open(fll.name, "r") as f:
+                    record["llvm_ir"]['code'] = [f.read()]
+                cmd = [LLVM_PARSER_CHECKER, fll.name]
+                ret = subprocess.run(cmd, capture_output=True, text=True)
+                if ret.returncode != 0:
+                    print(f"Error: {cmd}")
+                    return False
+                try:
+                    func_info = json.loads(ret.stdout)
+                    if len(func_info['functions']) == 0:
+                        print(cpp_code)
+                        return False
+                except Exception as e:
+                    print(e)
+                    return False
+    return True
+
+
 
 
 def filter_invalid_records(record):
@@ -110,6 +145,8 @@ def filter_invalid_asm(record):
 
 
 def prepare_dataset(dataset, num_proc=80):
+    dataset = dataset.filter(filter_func_to_llvm_ir, num_proc=num_proc)
+    print(len(dataset))
     dataset = dataset.map(map_func_to_llvm_ir, num_proc=num_proc, load_from_cache_file=True)
     print(len(dataset))
     dataset = dataset.filter(filter_invalid_records, num_proc=num_proc)
@@ -118,7 +155,7 @@ def prepare_dataset(dataset, num_proc=80):
     print(len(dataset))
     dataset = dataset.filter(filter_invalid_asm, num_proc=num_proc)
     print(len(dataset))
-    dataset = dataset.map(map_func_info, num_proc=num_proc, load_from_cache_file=True)
+    dataset = dataset.map(map_func_info, num_proc=1, load_from_cache_file=True)
     print(len(dataset))
     return dataset
 
