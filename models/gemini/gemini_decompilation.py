@@ -8,10 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from datasets import load_from_disk, Dataset
+from qdrant_client import QdrantClient
 
 from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
 from utils.preprocessing_assembly import preprocessing_assembly
+from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
 from utils.openai_helper import extract_llvm_code_from_response, format_decompile_prompt, format_compile_error_prompt, format_execution_error_prompt
+from models.rag.exebench_qdrant_base import load_embedding_model, find_similar_records_in_exebench_synth_rich_io
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,14 +27,30 @@ logger = logging.getLogger(__name__)
 GENERAL_INIT_PROMPT = """Please decompile the following assembly code to LLVM IR
     and please place the final generated LLVM IR code between ```llvm and ```: {asm_code} 
     Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once."""
+
 LLM4COMPILE_PROMPT = "Disassemble this code to LLVM IR: <code>{asm_code} \n</code>"
 
-SIMILAR_RECORD_PROMPT = """Please decompile the following assembly code to LLVM IR
-    and please place the final generated LLVM IR code between ```llvm and ```: {asm_code}
-    Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
-    Here is a example of the similar assembly code and the corresponding LLVM IR: {similar_asm_code} {similar_llvm_ir}
+SIMILAR_RECORD_PROMPT = """Please decompile the assembly code to LLVM IR.
+    Here is a example of the similar assembly code and the corresponding decompiled LLVM IR: 
+    ```assembly
+    {similar_asm_code} 
+    ```
+    →
+    ```llvm
+    {similar_llvm_ir}
+    ```
+    Please decompile the following assembly code to LLVM IR.
+    * Note that *
+    - LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
+    - The decompiled LLVM IR should be valid and can be compiled successfully.
+    - Place the final generated LLVM IR code between ```llvm and ```.
+    ```assembly
+    {asm_code}
+    ```
     """
 
+
+HOME_DIR = os.path.expanduser("~")
 # Service config: Key: model name, Value: (client, model_name)
 
 
@@ -51,11 +71,31 @@ parser.add_argument('--port',
                     type=str,
                     default="9001",
                     help='Port to use for decompilation')
+
+parser.add_argument('--qdrant_host',
+                    type=str,
+                    default="localhost",
+                    help='Host to use for Qdrant')
+
+parser.add_argument('--qdrant_port',
+                    type=str,
+                    default="6333",
+                    help='Port to use for Qdrant')
+
+parser.add_argument('--in-context-learning',
+                    action='store_true',
+                    default=True,
+                    help='Use in context learning')
 args = parser.parse_args()
 
 model = args.model
 host = args.host
 port = args.port
+in_context_learning = args.in_context_learning
+
+qdrant_client = QdrantClient(host=args.qdrant_host, port=args.qdrant_port)
+embedding_model = load_embedding_model()
+dataset_for_qdrant_dir = f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff"
 
 SERVICE_CONFIG = {
     "Qwen3-32B": (OpenAI(
@@ -110,12 +150,21 @@ def prepare_prompt(record, remove_comments: bool = True):
     return prompt
 
 
-def prepare_prompt_from_similar_record(record, similar_record, remove_comments: bool = True):
+def prepare_prompt_from_similar_record(record, remove_comments: bool = True):
+    similar_record, score = find_similar_records_in_exebench_synth_rich_io(qdrant_client, embedding_model, record, dataset_for_qdrant_dir)
     asm_code = record["asm"]["code"][-1]
     asm_code = preprocessing_assembly(asm_code,
                                       remove_comments=remove_comments)
-    prompt = input_prompt.format(asm_code=asm_code)
+    similar_asm_code = similar_record["asm"]["code"][-1]
+    similar_asm_code = preprocessing_assembly(similar_asm_code,
+                                              remove_comments=remove_comments)
+    similar_llvm_ir = similar_record["llvm_ir"]["code"][-1]
+    similar_llvm_ir = preprocessing_llvm_ir(similar_llvm_ir)
+    prompt = SIMILAR_RECORD_PROMPT.format(asm_code=asm_code, similar_asm_code=similar_asm_code, similar_llvm_ir=similar_llvm_ir)
     return prompt
+
+
+prepare_prompt_func = prepare_prompt_from_similar_record if in_context_learning else prepare_prompt
 
 
 def evaluate_response(response, record, idx, validate_dir):
@@ -205,9 +254,12 @@ def LLM_predict_openai_api(dataset: list,
     if not os.path.exists(output_dir):
         raise ValueError(f"Output directory {output_dir} does not exist.")
     with Pool(processes=num_processes) as pool:
-        args = [(prepare_prompt(record,
+        args = [(prepare_prompt_func(record,
                                 remove_comments), idx, output_dir, record)
                 for idx, record in enumerate(dataset)]
+        # Now we don't need the embedding model to be loaded
+        del embedding_model
+        print("del embedding model")
         results = pool.starmap(process_one, args)
         pickle.dump(results, open(os.path.join(output_dir, "results.pkl"),
                                   "wb"))
@@ -374,32 +426,34 @@ def main(dataset_dir_path,
     if not os.path.exists(response_output_dir):
         os.makedirs(response_output_dir, exist_ok=True)
     LLM_predict_openai_api(dataset, output_dir, num_processes=num_processes, remove_comments=remove_comments)
-    fix_all(dataset,
-            output_dir,
-            num_processes=num_processes,
-            num_retry=num_retry,
-            num_generate=num_generate,
-            remove_comments=remove_comments)
+    # fix_all(dataset,
+    #         output_dir,
+    #         num_processes=num_processes,
+    #         num_retry=num_retry,
+    #         num_generate=num_generate,
+    #         remove_comments=remove_comments)
 
 
 if __name__ == "__main__":
     remove_comments = True
     with_comments = "without" if remove_comments else "with"
+    in_context_learning_str = "in-context-learning" if in_context_learning else "no-in-context-learning"
     dataset_paires = [
         # (
-        #     "/home/xiachunwei/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
-        #     f"validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments"
-        # ),
-        # (
-        #     "/home/xiachunwei/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
-        #     f"validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments"
+        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
+        #     f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
         # ),
         (
-            "/home/xiachunwei/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
-            f"validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments"
+            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
+            f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
+        ),
+        (
+            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
+            f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
         ),
     ]
     for dataset_dir_path, response_output_dir in dataset_paires:
         if not os.path.exists(response_output_dir):
             os.makedirs(response_output_dir, exist_ok=True)
         main(dataset_dir_path, response_output_dir, num_processes=16, remove_comments=remove_comments)
+        

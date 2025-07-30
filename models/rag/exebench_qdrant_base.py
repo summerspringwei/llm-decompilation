@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import os
 import torch
 import logging
 import numpy as np
 from vllm import LLM
 from tqdm import tqdm
 from qdrant_client.models import Distance, VectorParams, PointStruct
+from datasets import load_from_disk
 
 from utils.preprocessing_assembly import preprocessing_assembly
 
@@ -135,3 +137,16 @@ def search_similar_records(client, collection_name, model, query_record, top_k=3
 
     return search_results
 
+
+def find_similar_records_in_exebench_synth_rich_io(client, model, record, dataset_dir):
+    exebench_slits = [load_from_disk(os.path.join(dataset_dir, f"train_synth_rich_io_filtered_{idx}_llvm_extract_func_ir_assembly_O2_llvm_diff")) for idx in range(8)]
+    best_dataset_idx = 0
+    best_record_idx = 0
+    search_results = [(search_similar_records(client, f"train_synth_rich_io_filtered_{idx}_preprocessed", model, record, top_k=1), idx) for idx in range(8)] # list[list[tuple[search_result, idx]]]
+    search_results.sort(key=lambda x: x[0][0].score, reverse=True)
+    # We choose the second best result
+    best_dataset_idx = search_results[1][1]
+    best_record_idx = search_results[1][0][0].payload.get('id')
+    best_score = search_results[1][0][0].score
+    return (exebench_slits[best_dataset_idx][best_record_idx], best_score)
+    

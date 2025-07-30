@@ -115,8 +115,6 @@ def filter_func_to_llvm_ir(record):
     return True
 
 
-
-
 def filter_invalid_records(record):
     if len(record["llvm_ir"]['code'][-1]) == 0:
         return False

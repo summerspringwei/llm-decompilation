@@ -24,18 +24,6 @@ def build_exebench_train_synth_rich_io_qrand_database(dataset_dir: str = "/data1
         print(f"Built database for {collection_name}")
 
 
-def find_similar_records_in_exebench_synth_rich_io(client, model, record, dataset_dir):
-    exebench_slits = [load_from_disk(os.path.join(dataset_dir, f"train_synth_rich_io_filtered_{idx}_llvm_extract_func_ir_assembly_O2_llvm_diff")) for idx in range(8)]
-    best_dataset_idx = 0
-    best_record_idx = 0
-    search_results = [(search_similar_records(client, f"train_synth_rich_io_filtered_{idx}_preprocessed", model, record, top_k=3), idx) for idx in range(8)] # list[list[tuple[search_result, idx]]]
-    search_results.sort(key=lambda x: x[0][0].score, reverse=True)
-    # We choose the second best result
-    best_dataset_idx = search_results[1][1]
-    best_record_idx = search_results[1][0][0].payload.get('id')
-    best_score = search_results[1][0][0].score
-    return (exebench_slits[best_dataset_idx][best_record_idx], best_score)
-
 
 def count_exebench_dataset_similarity(dataset, client, model):
     count = 0
