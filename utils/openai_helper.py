@@ -45,31 +45,60 @@ def extract_llvm_code_from_response(response)->List[str]:
     return predict_llvm_code_list
 
 
-BASIC_DECOMPILE_TEMPLATE ="""
-        Please decompile the following assembly code to LLVM IR and please place the final generated LLVM IR code between ```llvm and ```: 
-        {target_assembly}
-        Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
-        For the global variables, please declare (not define) them in the LLVM IR code.
-        Set the target data layout and target triple to the following:
-        ```llvm
-        target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
-        target triple = "x86_64-unknown-linux-gnu"
-        ```
-        """
+BASIC_DECOMPILE_TEMPLATE = """
+Please decompile the following assembly code to LLVM IR and please place the final generated LLVM IR code between ```llvm and ```: 
+{target_assembly}
+Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
+For the global variables, please declare (not define) them in the LLVM IR code.
+Set the target data layout and target triple to the following:
+```llvm
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
+```
+"""
 
-COMPILE_ERROR_TEMPLATE = BASIC_DECOMPILE_TEMPLATE + """
-            You generated the following LLVM IR but it is failed to be compiled: ```llvm\n{predict}```\n 
-            The compilation error message is as follows: {error_msg}
-            Please correct the LLVM IR code and make sure it is correct.\n
-            place the final generated LLVM IR code between ```llvm and ```.
-            """
+GENERAL_INIT_PROMPT = """
+Please decompile the following assembly code to LLVM IR
+and please place the final generated LLVM IR code between ```llvm and ```: {asm_code} 
+Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once."""
 
-TEST_ERROR_TEMPLATE = BASIC_DECOMPILE_TEMPLATE + """
-        Then you generated the following LLVM IR: ```llvm\n{predict}```\n 
-        After I compile the LLVM IR you provided, the generated assembly is: {predict_assembly}\n
-        The result is not right. Please compare with the original result and re-generate the LLVM IR.\n
-        Place the final generated LLVM IR code between ```llvm and ```.
-        """
+LLM4COMPILE_PROMPT = "Disassemble this code to LLVM IR: <code>{asm_code} \n</code>"
+
+SIMILAR_RECORD_PROMPT = """
+Please decompile the assembly code to LLVM IR.
+Here is a example of the similar assembly code and the corresponding decompiled LLVM IR: 
+```assembly
+{similar_asm_code} 
+```
+→
+```llvm
+{similar_llvm_ir}
+```
+Please decompile the following assembly code to LLVM IR.
+* Note that *
+- LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
+- The decompiled LLVM IR should be valid and can be compiled successfully.
+- Place the final generated LLVM IR code between ```llvm and ```.
+```assembly
+{asm_code}
+```
+"""
+
+COMPILE_ERROR_TEMPLATE = """
+You generated the following LLVM IR but it is failed to be compiled: ```llvm
+{predict}
+```
+The compilation error message is as follows: {error_msg}
+Please correct the LLVM IR code based on the similar example and make sure it meets both the semantic and the syntax.
+place the final generated LLVM IR code between ```llvm and ```.
+"""
+
+TEST_ERROR_TEMPLATE = """
+Then you generated the following LLVM IR: ```llvm\n{predict}```\n 
+After I compile the LLVM IR you provided, the generated assembly is: {predict_assembly}\n
+The result is not right. Please compare the generated assembly with the original assembly and re-generate the LLVM IR.\n
+Place the final generated LLVM IR code between ```llvm and ```.
+"""
 
 
 def format_decompile_prompt(target_assembly):
@@ -79,8 +108,18 @@ def format_decompile_prompt(target_assembly):
     return prompt
 
 
-def format_compile_error_prompt(target_assembly, predict, error_msg):
-    prompt = COMPILE_ERROR_TEMPLATE.format(
+def format_compile_error_prompt(target_assembly, predict, error_msg, in_context_learning, similar_asm_code=None, similar_llvm_ir=None):
+    if in_context_learning:
+        first_prompt = SIMILAR_RECORD_PROMPT.format(
+            similar_asm_code=similar_asm_code,
+            similar_llvm_ir=similar_llvm_ir,
+            asm_code=target_assembly
+        )
+    else:
+        first_prompt = BASIC_DECOMPILE_TEMPLATE.format(
+            target_assembly=target_assembly
+        )
+    prompt = first_prompt + COMPILE_ERROR_TEMPLATE.format(
         target_assembly=target_assembly,
         predict=predict,
         error_msg=error_msg
@@ -88,8 +127,18 @@ def format_compile_error_prompt(target_assembly, predict, error_msg):
     return prompt
 
 
-def format_execution_error_prompt(target_assembly, predict, predict_assembly):
-    prompt = TEST_ERROR_TEMPLATE.format(
+def format_execution_error_prompt(target_assembly, predict, predict_assembly, in_context_learning, similar_asm_code=None, similar_llvm_ir=None):
+    if in_context_learning:
+        first_prompt = SIMILAR_RECORD_PROMPT.format(
+            similar_asm_code=similar_asm_code,
+            similar_llvm_ir=similar_llvm_ir,
+            asm_code=target_assembly
+        )
+    else:
+        first_prompt = BASIC_DECOMPILE_TEMPLATE.format(
+            target_assembly=target_assembly
+        )
+    prompt = first_prompt + TEST_ERROR_TEMPLATE.format(
         target_assembly=target_assembly,
         predict=predict,
         predict_assembly=predict_assembly

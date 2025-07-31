@@ -13,41 +13,15 @@ from qdrant_client import QdrantClient
 from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
 from utils.preprocessing_assembly import preprocessing_assembly
 from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
-from utils.openai_helper import extract_llvm_code_from_response, format_decompile_prompt, format_compile_error_prompt, format_execution_error_prompt
+from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt
 from models.rag.exebench_qdrant_base import load_embedding_model, find_similar_records_in_exebench_synth_rich_io
-
+from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT
 
 logging.basicConfig(
     level=logging.INFO,
     format=
     '%(asctime)s - %(filename)s: %(lineno)d - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-
-GENERAL_INIT_PROMPT = """Please decompile the following assembly code to LLVM IR
-    and please place the final generated LLVM IR code between ```llvm and ```: {asm_code} 
-    Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once."""
-
-LLM4COMPILE_PROMPT = "Disassemble this code to LLVM IR: <code>{asm_code} \n</code>"
-
-SIMILAR_RECORD_PROMPT = """Please decompile the assembly code to LLVM IR.
-    Here is a example of the similar assembly code and the corresponding decompiled LLVM IR: 
-    ```assembly
-    {similar_asm_code} 
-    ```
-    →
-    ```llvm
-    {similar_llvm_ir}
-    ```
-    Please decompile the following assembly code to LLVM IR.
-    * Note that *
-    - LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
-    - The decompiled LLVM IR should be valid and can be compiled successfully.
-    - Place the final generated LLVM IR code between ```llvm and ```.
-    ```assembly
-    {asm_code}
-    ```
-    """
 
 
 HOME_DIR = os.path.expanduser("~")
@@ -82,19 +56,25 @@ parser.add_argument('--qdrant_port',
                     default="6333",
                     help='Port to use for Qdrant')
 
+parser.add_argument('--embedding_model',
+                    type=str,
+                    default="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B",
+                    help='Embedding model to use for RAG')
+
 parser.add_argument('--in-context-learning',
                     action='store_true',
                     default=True,
                     help='Use in context learning')
+
 args = parser.parse_args()
 
 model = args.model
 host = args.host
 port = args.port
+embedding_model_path = args.embedding_model
 in_context_learning = args.in_context_learning
 
 qdrant_client = QdrantClient(host=args.qdrant_host, port=args.qdrant_port)
-embedding_model = load_embedding_model()
 dataset_for_qdrant_dir = f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff"
 
 SERVICE_CONFIG = {
@@ -142,7 +122,7 @@ def huoshan_deepseek_r1_batch(client, prompt_list: list[str]):
     return response
 
 
-def prepare_prompt(record, remove_comments: bool = True):
+def prepare_prompt(record, remove_comments: bool = True, embedding_model=None):
     asm_code = record["asm"]["code"][-1]
     asm_code = preprocessing_assembly(asm_code,
                                       remove_comments=remove_comments)
@@ -150,7 +130,7 @@ def prepare_prompt(record, remove_comments: bool = True):
     return prompt
 
 
-def prepare_prompt_from_similar_record(record, remove_comments: bool = True):
+def prepare_prompt_from_similar_record(record, remove_comments: bool = True, embedding_model=None, idx: int = 0, output_dir: str = ""):
     similar_record, score = find_similar_records_in_exebench_synth_rich_io(qdrant_client, embedding_model, record, dataset_for_qdrant_dir)
     asm_code = record["asm"]["code"][-1]
     asm_code = preprocessing_assembly(asm_code,
@@ -161,10 +141,18 @@ def prepare_prompt_from_similar_record(record, remove_comments: bool = True):
     similar_llvm_ir = similar_record["llvm_ir"]["code"][-1]
     similar_llvm_ir = preprocessing_llvm_ir(similar_llvm_ir)
     prompt = SIMILAR_RECORD_PROMPT.format(asm_code=asm_code, similar_asm_code=similar_asm_code, similar_llvm_ir=similar_llvm_ir)
+    pickle.dump(similar_record, open(os.path.join(output_dir, f"similar_record_{idx}.pkl"), "wb"))
     return prompt
 
 
 prepare_prompt_func = prepare_prompt_from_similar_record if in_context_learning else prepare_prompt
+
+
+class EvaluationResult:
+    def __init__(self, predict_compile_success, predict_execution_success, error_msg):
+        self.predict_compile_success = predict_compile_success
+        self.predict_execution_success = predict_execution_success
+        self.error_msg = error_msg
 
 
 def evaluate_response(response, record, idx, validate_dir):
@@ -192,7 +180,7 @@ def evaluate_response(response, record, idx, validate_dir):
         if predict_compile_success:
             with open(predict_assembly_path, 'r') as f:
                 predict_execution_success = eval_assembly(record, f.read())
-        return predict_compile_success, predict_execution_success, error_msg
+        return EvaluationResult(predict_compile_success, predict_execution_success, error_msg)
 
     for predict in predict_list:
         if isinstance(predict, list) and len(predict) == 0:
@@ -201,9 +189,9 @@ def evaluate_response(response, record, idx, validate_dir):
     with ThreadPoolExecutor(max_workers=1) as executor:
         results = list(executor.map(eval_predict, predict_list))
 
-    predict_compile_success_list = [r[0] for r in results]
-    predict_execution_success_list = [r[1] for r in results]
-    error_msg_list = [r[2] for r in results]
+    predict_compile_success_list = [r.predict_compile_success for r in results]
+    predict_execution_success_list = [r.predict_execution_success for r in results]
+    error_msg_list = [r.error_msg for r in results]
 
     target_compile_success, target_assembly_path, target_error_msg = compile_llvm_ir(
         record["llvm_ir"]["code"][-1], sample_dir, name_hint="target")
@@ -231,6 +219,11 @@ def process_one(prompt: str, idx: int, output_dir: str,
 
     """
     response_file_path = os.path.join(output_dir, f"response_{idx}.pkl")
+    prompt_dir = os.path.join(output_dir, "prompts")
+    if not os.path.exists(prompt_dir):
+        os.makedirs(prompt_dir, exist_ok=True)
+    with open(os.path.join(prompt_dir, f"prompt_{idx}.txt"), "w") as f:
+        f.write(prompt)
     if os.path.exists(response_file_path):
         response = pickle.load(open(response_file_path, "rb"))
     else:
@@ -253,13 +246,19 @@ def LLM_predict_openai_api(dataset: list,
                            remove_comments: bool = True):
     if not os.path.exists(output_dir):
         raise ValueError(f"Output directory {output_dir} does not exist.")
-    with Pool(processes=num_processes) as pool:
-        args = [(prepare_prompt_func(record,
-                                remove_comments), idx, output_dir, record)
+    # We need to save the similar records for in-context learning
+    if not os.path.exists(os.path.join(output_dir, "similar_records")):
+        os.makedirs(os.path.join(output_dir, "similar_records"), exist_ok=True)
+    embedding_model = None
+    if in_context_learning:
+        embedding_model = load_embedding_model(embedding_model_path)
+    args = [(prepare_prompt_func(record,
+                                remove_comments, embedding_model, idx, os.path.join(output_dir, "similar_records")), idx, output_dir, record)
                 for idx, record in enumerate(dataset)]
-        # Now we don't need the embedding model to be loaded
+    if in_context_learning:
         del embedding_model
         print("del embedding model")
+    with Pool(processes=num_processes) as pool:
         results = pool.starmap(process_one, args)
         pickle.dump(results, open(os.path.join(output_dir, "results.pkl"),
                                   "wb"))
@@ -290,10 +289,23 @@ def prepare_fix_prompt(record, chat_response, validation_result, idx,
                        retry_count, output_dir, remove_comments: bool = True):
     predict_list = extract_llvm_code_from_response(chat_response)
     sample_dir = os.path.join(output_dir, f"sample_{idx}_retry_{retry_count}")
+    # Get the similar record for in-context learning
+    similar_record_dir = os.path.join(output_dir, "similar_records")
+    similar_record_path = os.path.join(similar_record_dir, f"similar_record_{idx}.pkl")
+    similar_record = pickle.load(open(similar_record_path, "rb"))
+    similar_asm_code = similar_record["asm"]["code"][-1]
+    similar_asm_code = preprocessing_assembly(similar_asm_code,
+                                              remove_comments=remove_comments)
+    similar_llvm_ir = similar_record["llvm_ir"]["code"][-1]
+    similar_llvm_ir = preprocessing_llvm_ir(similar_llvm_ir)
     if not os.path.exists(sample_dir):
         os.makedirs(sample_dir, exist_ok=True)
     predict_compile_success_list = validation_result["predict_compile_success"]
+    target_asm_code = record["asm"]["code"][-1]
+    target_asm_code = preprocessing_assembly(target_asm_code,
+                                              remove_comments=remove_comments)
     error_msg, fix_idx = None, 0
+    # 1. If there is no choice that is compile success, we choose the one that is compile success
     if not any(predict_compile_success_list):
         error_msg_list = validation_result['predict_error_msg']
         predict = ""
@@ -307,8 +319,8 @@ def prepare_fix_prompt(record, chat_response, validation_result, idx,
                     break
         if predict == "":
             predict = predict_list[0]
-        prompt = format_compile_error_prompt(record["asm"]["code"][-1],
-                                             predict, error_msg)
+        prompt = format_compile_error_prompt(target_asm_code,
+                                             predict, error_msg, in_context_learning, similar_asm_code, similar_llvm_ir)
     # 2 If there is one choice that is compile success, we choose the one that is compile success
     else:
         for choice_idx, predict in enumerate(predict_compile_success_list):
@@ -324,8 +336,8 @@ def prepare_fix_prompt(record, chat_response, validation_result, idx,
             predict_assembly = f.read()
             predict_assembly = preprocessing_assembly(predict_assembly,
                                                       remove_comments=remove_comments)
-        prompt = format_execution_error_prompt(record["asm"]["code"][-1],
-                                               predict, predict_assembly)
+        prompt = format_execution_error_prompt(target_asm_code,
+                                               predict, predict_assembly, in_context_learning, similar_asm_code, similar_llvm_ir)
     return prompt
 
 
@@ -342,6 +354,9 @@ def correct_one(chat_response,
             f"Index: {idx}, {validation_result['predict_compile_success']}, {validation_result['predict_execution_success']}"
         )
         return True, {}
+    prompt_dir = os.path.join(output_dir, "prompts")
+    if not os.path.exists(prompt_dir):
+        os.makedirs(prompt_dir, exist_ok=True)
     predict_list = extract_llvm_code_from_response(chat_response)
     sample_dir = os.path.join(output_dir, f"sample_{idx}")
     count = 0
@@ -355,6 +370,8 @@ def correct_one(chat_response,
         # 1. Prepare the prompt for the next retry
         prompt = prepare_fix_prompt(record, chat_response, validation_result,
                                     idx, count, output_dir, remove_comments)
+        with open(os.path.join(prompt_dir, f"prompt{idx}_retry_{count}.txt"), "w") as f:
+            f.write(prompt)
         # 2. Call the LLM to fix the error
         pkl_file_path = os.path.join(output_dir, f"response_{idx}_retry_{count}.pkl")
         if os.path.exists(pkl_file_path):
@@ -426,12 +443,12 @@ def main(dataset_dir_path,
     if not os.path.exists(response_output_dir):
         os.makedirs(response_output_dir, exist_ok=True)
     LLM_predict_openai_api(dataset, output_dir, num_processes=num_processes, remove_comments=remove_comments)
-    # fix_all(dataset,
-    #         output_dir,
-    #         num_processes=num_processes,
-    #         num_retry=num_retry,
-    #         num_generate=num_generate,
-    #         remove_comments=remove_comments)
+    fix_all(dataset,
+            output_dir,
+            num_processes=num_processes,
+            num_retry=num_retry,
+            num_generate=num_generate,
+            remove_comments=remove_comments)
 
 
 if __name__ == "__main__":
@@ -439,21 +456,21 @@ if __name__ == "__main__":
     with_comments = "without" if remove_comments else "with"
     in_context_learning_str = "in-context-learning" if in_context_learning else "no-in-context-learning"
     dataset_paires = [
+        (
+            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
+            f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
+        ),
         # (
-        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
-        #     f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
+        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
+        #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
         # ),
-        (
-            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
-            f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
-        ),
-        (
-            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
-            f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
-        ),
+        # (
+        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
+        #     f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
+        # ),
     ]
     for dataset_dir_path, response_output_dir in dataset_paires:
         if not os.path.exists(response_output_dir):
             os.makedirs(response_output_dir, exist_ok=True)
-        main(dataset_dir_path, response_output_dir, num_processes=16, remove_comments=remove_comments)
+        main(dataset_dir_path, response_output_dir, num_processes=64, remove_comments=remove_comments)
         
