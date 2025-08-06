@@ -209,3 +209,5 @@ figures/
 tests/
 tmp.txt
 test.py
+*.out
+*.s

@@ -456,14 +456,14 @@ if __name__ == "__main__":
     with_comments = "without" if remove_comments else "with"
     in_context_learning_str = "in-context-learning" if in_context_learning else "no-in-context-learning"
     dataset_paires = [
-        (
-            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
-            f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
-        ),
         # (
-        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
-        #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
+        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
+        #     f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
         # ),
+        (
+            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
+            f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
+        ),
         # (
         #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
         #     f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{in_context_learning_str}"
