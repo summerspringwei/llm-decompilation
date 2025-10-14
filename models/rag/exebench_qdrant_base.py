@@ -128,7 +128,7 @@ def search_similar_records(client, collection_name, model, query_record, top_k=3
     
     # Generate embedding for query
     outputs = model.embed([query_assembly])
-    query_embedding = torch.tensor([o.outputs.embedding for o in outputs])[0].cpu().numpy()
+    query_embedding = torch.tensor([o['outputs']['embedding'] for o in outputs])[0].cpu().numpy()
     
     # Search in Qdrant
     search_results = client.search(

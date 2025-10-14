@@ -34,8 +34,9 @@ export OPENAI_API_KEY="your_openai_api_key"         # For OpenAI-GPT-4.1
 For local models (Qwen3-32B, Qwen3-30B-A3B), ensure your model server is running:
 
 ```bash
-# Example: Start your model server on localhost:9001
+export CUDA_VISIBLE_DEVICES=0,1 && vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-32B --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --served-model-name Qwen3-32B
 ```
+
 
 ### 4. Qdrant Setup
 
@@ -46,6 +47,10 @@ For RAG functionality, ensure Qdrant is running:
 docker run -p 6333:6333 qdrant/qdrant
 ```
 
+Start embedding model service:
+```bash
+python3 models/rag/embedding_service.py
+```
 ## Usage
 
 ### 1. Start the Tool

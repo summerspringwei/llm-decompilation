@@ -17,6 +17,7 @@ from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
 from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt
 from models.rag.exebench_qdrant_base import load_embedding_model, find_similar_records_in_exebench_synth_rich_io
 from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT
+from models.rag.embedding_client import RemoteEmbeddingModel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,7 +67,7 @@ class IterativeDecompilationTool:
 
     def setup_model(self, model_name: str, host: str = "localhost", port: str = "9001", 
                    qdrant_host: str = "localhost", qdrant_port: str = "6333",
-                   embedding_model_path: str = "/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B",
+                   embedding_url: str = "http://localhost:8001",
                    in_context_learning: bool = True):
         """Setup the model and connections"""
         try:
@@ -85,7 +86,7 @@ class IterativeDecompilationTool:
             
             # Setup embedding model for RAG
             if in_context_learning:
-                self.embedding_model = load_embedding_model(embedding_model_path, device_idx=3)
+                self.embedding_model = RemoteEmbeddingModel(embedding_url)
             
             return f"Model {model_name} setup successfully!"
         except Exception as e:
@@ -231,7 +232,7 @@ class IterativeDecompilationTool:
             self.current_record = self.dataset[idx]
             
             # Get original C function definition
-            c_func_def = self.current_record.get("func_head", "No C function definition available")
+            c_func_def = self.current_record.get("func_def", "No C function definition available")
             
             # Get original assembly
             original_asm = self.current_record["asm"]["code"][-1]
@@ -308,9 +309,9 @@ def create_gradio_interface():
                 port = gr.Textbox(value="9001", label="Port")
                 qdrant_host = gr.Textbox(value="localhost", label="Qdrant Host")
                 qdrant_port = gr.Textbox(value="6333", label="Qdrant Port")
-                embedding_model_path = gr.Textbox(
-                    value="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B",
-                    label="Embedding Model Path"
+                embedding_url = gr.Textbox(
+                    value="http://localhost:8001",
+                    label="Embedding Model URL"
                 )
                 in_context_learning = gr.Checkbox(value=True, label="Use In-Context Learning")
                 
@@ -376,8 +377,8 @@ def create_gradio_interface():
                 fixed_evaluation = gr.JSON(label="Fixed Evaluation Results")
         
         # Event handlers
-        def setup_model_handler(model, host, port, qdrant_host, qdrant_port, embedding_path, icl):
-            return tool.setup_model(model, host, port, qdrant_host, qdrant_port, embedding_path, icl)
+        def setup_model_handler(model, host, port, qdrant_host, qdrant_port, embedding_url, icl):
+            return tool.setup_model(model, host, port, qdrant_host, qdrant_port, embedding_url, icl)
         
         def load_dataset_handler(path):
             return tool.load_dataset(path)
@@ -418,7 +419,7 @@ def create_gradio_interface():
         # Connect events
         setup_btn.click(
             setup_model_handler,
-            inputs=[model_name, host, port, qdrant_host, qdrant_port, embedding_model_path, in_context_learning],
+            inputs=[model_name, host, port, qdrant_host, qdrant_port, embedding_url, in_context_learning],
             outputs=setup_status
         )
         

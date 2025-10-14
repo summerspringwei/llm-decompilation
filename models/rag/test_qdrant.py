@@ -1,7 +1,8 @@
 from tqdm import tqdm
 from datasets import load_from_disk, load_dataset
 from qdrant_client import QdrantClient
-from models.rag.build_qdrant_database import build_qdrant_database, search_similar_records, load_embedding_model, find_similar_records_in_exebench_synth_rich_io
+from models.rag.exebench_qdrant_base import build_qdrant_database, search_similar_records, load_embedding_model, find_similar_records_in_exebench_synth_rich_io
+from models.rag.embedding_client import RemoteEmbeddingModel
 from utils.preprocessing_assembly import preprocessing_assembly 
 from analysis.analyze_exebench_dataset import prepare_dataset
 
@@ -144,7 +145,7 @@ def find_similar_for_motivation_dataset():
     dataset_path = "/data1/xiachunwei/Datasets/filtered_exebench/sampled_dataset_without_loops_164"
     dataset = load_from_disk(dataset_path)
     client = QdrantClient("localhost", port=6333)
-    model = load_embedding_model()
+    model = RemoteEmbeddingModel("http://localhost:8001")
     for record in dataset:
         similar_records, score = find_similar_records_in_exebench_synth_rich_io(client, model, record, dataset_dir)
         print("//"*50)
