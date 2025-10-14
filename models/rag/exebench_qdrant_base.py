@@ -11,15 +11,17 @@ from datasets import load_from_disk
 from utils.preprocessing_assembly import preprocessing_assembly
 
 
-def load_embedding_model(model_path="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B")->LLM:
+def load_embedding_model(model_path="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B", device_idx=0)->LLM:
     """Load the Qwen/Qwen3-Embedding-8B model using vLLM for generating embeddings."""
     # Setup CUDA environment
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(device_idx)
     model = LLM(
             model=model_path, 
             task="embed",
             gpu_memory_utilization=0.95,
-            max_model_len=32000
+            max_model_len=32000,
         )
+
     
     return model
 

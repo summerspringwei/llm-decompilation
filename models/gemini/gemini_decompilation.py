@@ -27,47 +27,50 @@ logger = logging.getLogger(__name__)
 HOME_DIR = os.path.expanduser("~")
 # Service config: Key: model name, Value: (client, model_name)
 
+def parse_args():
+        
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Run decompilation with specified model')
+    parser.add_argument('--model',
+                        type=str,
+                        default="Qwen3-32B",
+                        help='Model to use for decompilation')
 
-# Parse command line arguments
-parser = argparse.ArgumentParser(
-    description='Run decompilation with specified model')
-parser.add_argument('--model',
-                    type=str,
-                    default="Qwen3-32B",
-                    help='Model to use for decompilation')
+    parser.add_argument('--host',
+                        type=str,
+                        default="localhost",
+                        help='Host to use for decompilation')
 
-parser.add_argument('--host',
-                    type=str,
-                    default="localhost",
-                    help='Host to use for decompilation')
+    parser.add_argument('--port',
+                        type=str,
+                        default="9001",
+                        help='Port to use for decompilation')
 
-parser.add_argument('--port',
-                    type=str,
-                    default="9001",
-                    help='Port to use for decompilation')
+    parser.add_argument('--qdrant_host',
+                        type=str,
+                        default="localhost",
+                        help='Host to use for Qdrant')
 
-parser.add_argument('--qdrant_host',
-                    type=str,
-                    default="localhost",
-                    help='Host to use for Qdrant')
+    parser.add_argument('--qdrant_port',
+                        type=str,
+                        default="6333",
+                        help='Port to use for Qdrant')
 
-parser.add_argument('--qdrant_port',
-                    type=str,
-                    default="6333",
-                    help='Port to use for Qdrant')
+    parser.add_argument('--embedding_model',
+                        type=str,
+                        default="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B",
+                        help='Embedding model to use for RAG')
 
-parser.add_argument('--embedding_model',
-                    type=str,
-                    default="/data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B",
-                    help='Embedding model to use for RAG')
+    parser.add_argument('--in-context-learning',
+                        action='store_true',
+                        default=True,
+                        help='Use in context learning')
 
-parser.add_argument('--in-context-learning',
-                    action='store_true',
-                    default=True,
-                    help='Use in context learning')
+    args = parser.parse_args()
+    return args
 
-args = parser.parse_args()
-
+args = parse_args()
 model = args.model
 host = args.host
 port = args.port

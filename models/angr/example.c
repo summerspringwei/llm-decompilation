@@ -11,9 +11,11 @@ int foo(int a, int b, int c) {
 }
 
 int main(int argc, char *argv[]) {
+    
     int a = atoi(argv[1]);
     int b = atoi(argv[2]);
-    int c = foo(a, b, 7);
+    int const_value = b / 100;
+    int c = foo(a, b, const_value);
     printf("%d\n", c);
     return 0;
 }

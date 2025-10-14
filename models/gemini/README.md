@@ -1,92 +1,194 @@
+# Interactive Decompilation Tool
 
-## Coreutils study
-Complie `basename` to llvm IR and assembly:
+A Gradio-based interactive tool for iterative decompilation of assembly code to LLVM IR using large language models.
+
+## Features
+
+- **Dataset Loading**: Load datasets from disk and browse through samples
+- **Model Configuration**: Support for multiple LLM models (Qwen3-32B, Qwen3-30B-A3B, Huoshan-DeepSeek-R1, OpenAI-GPT-4.1)
+- **RAG Integration**: In-context learning with similar examples from Qdrant vector database
+- **Streaming Generation**: Real-time response generation with streaming
+- **Interactive Evaluation**: Automatic compilation and execution testing of generated LLVM IR
+- **Error Fixing**: Iterative error correction with compile and execution error feedback
+- **Visual Interface**: Clean, organized interface with tabs for different code views
+
+## Setup
+
+### 1. Install Dependencies
+
 ```bash
-FLAGS="-Werror -Wall"
-clang  -I. -I./lib  -Ilib -I./lib -Isrc -I./src $FLAGS -O2 -MT src/basename.o -MD -MP -MF $depbase.Tpo -S -fno-asynchronous-unwind-tables -emit-llvm -o src/basename.ll src/basename.c
-clang  -I. -I./lib  -Ilib -I./lib -Isrc -I./src $FLAGS -O2 -MT src/basename.o -MD -MP -MF $depbase.Tpo -S -fno-asynchronous-unwind-tables -o src/basename.s src/basename.c
-```
-Note the option `-fno-asynchronous-unwind-tables` will strip the debug info like ".cfi_xxx"
-
-
-We add the following lines to coreutils makefile to compile `.c` to `.ll`:
-```makefile
-%.ll: %.c
-	$(AM_V_CC)clang -S -emit-llvm \
-	$(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) \
-	$(lib_libcoreutils_a_CFLAGS) $(CFLAGS) \
-	-o $@ $<
+pip install -r requirements.txt
 ```
 
-Extract the cfg
+### 2. Environment Variables
+
+Set up the following environment variables for API access:
+
 ```bash
-opt -passes=dot-cfg-only target.ll
+export ARK_STREAM_API_KEY="your_ark_stream_api_key"  # For Huoshan-DeepSeek-R1
+export OPENAI_API_KEY="your_openai_api_key"         # For OpenAI-GPT-4.1
 ```
 
-### The overall workflow:
+### 3. Model Server Setup
 
-Compile C file to.ll
+For local models (Qwen3-32B, Qwen3-30B-A3B), ensure your model server is running:
+
 ```bash
-make src/tail.ll
+# Example: Start your model server on localhost:9001
 ```
 
-1. Extract one function from LLVM IR file:
+### 4. Qdrant Setup
+
+For RAG functionality, ensure Qdrant is running:
+
 ```bash
-llvm-extract --func=main -S src/tail.ll -o src/tail_main.ll
+# Start Qdrant server
+docker run -p 6333:6333 qdrant/qdrant
 ```
 
-2. Delete one function from module:
+## Usage
+
+### 1. Start the Tool
+
 ```bash
-llvm-extract -delete -func=main -S src/tail.ll -o src/tail_no_main.ll
+cd models/gemini
+python iterative_decompile.py
 ```
 
-3. Compile function LLVM IR to assembly:
-```bash
-llc src/tail_main.ll -o src/tail_main.s
+The tool will be available at `http://localhost:7860`
+
+### 2. Configuration Steps
+
+1. **Setup Model**: Configure your chosen model with appropriate host/port settings
+2. **Load Dataset**: Provide the path to your dataset directory
+3. **Select Sample**: Choose a sample index to work with
+
+### 3. Workflow
+
+1. **Load Sample**: Click "Load Sample" to load a specific sample by index
+2. **Review Original Code**: Examine the original C function, assembly, and LLVM IR
+3. **Generate Response**: Click "Generate Response" to create LLVM IR from assembly
+4. **Evaluate Results**: Review compilation and execution success
+5. **Fix Errors**: If needed, use the error fixing section to iteratively improve results
+
+### 4. Error Fixing
+
+The tool supports two types of error fixing:
+
+- **Compile Error**: When the generated LLVM IR fails to compile
+- **Execution Error**: When the compiled assembly doesn't match expected behavior
+
+For each error type, the tool automatically generates appropriate prompts with error messages and context.
+
+## Interface Components
+
+### Model Configuration
+- Model selection dropdown
+- Host/port configuration for local models
+- Qdrant connection settings
+- Embedding model path for RAG
+- In-context learning toggle
+
+### Dataset Management
+- Dataset path input
+- Sample index selection
+- Dataset status display
+
+### Code Display
+- **Original Code Tab**: C function definition, original assembly, original LLVM IR
+- **Similar Record Tab**: RAG-retrieved similar examples
+- **Predicted Code Tab**: Generated LLVM IR and compiled assembly
+
+### Generation Controls
+- Prompt display and editing
+- Number of generations slider
+- Generate button with streaming output
+
+### Evaluation Results
+- JSON display of compilation and execution results
+- Success/failure indicators
+- Error messages
+
+### Error Fixing
+- Error type selection (compile/execution)
+- Error message input
+- Automatic fix prompt generation
+- Fixed response evaluation
+
+## Dataset Format
+
+The tool expects datasets in the following format:
+
+```python
+{
+    "func_head": "C function definition",
+    "asm": {"code": ["assembly_code"]},
+    "llvm_ir": {"code": ["llvm_ir_code"]},
+    # ... other fields
+}
 ```
 
-4. Use the LLM to decompile assembly to IR
+## Model Support
 
+### Local Models
+- **Qwen3-32B**: Requires local server on specified host/port
+- **Qwen3-30B-A3B**: Requires local server on specified host/port
 
-5. link the decompiled `.ll` to one `.ll` file:
-```bash
-llvm-link src/tail_no_main.ll src/tail_main.ll -o tail.ll
+### Cloud Models
+- **Huoshan-DeepSeek-R1**: Requires ARK_STREAM_API_KEY
+- **OpenAI-GPT-4.1**: Requires OPENAI_API_KEY
+
+## RAG Configuration
+
+For in-context learning, the tool uses:
+- Qdrant vector database for similarity search
+- Sentence transformers for embeddings
+- Similar assembly/LLVM IR pairs as examples
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Model Connection Failed**: Check host/port settings and ensure model server is running
+2. **Dataset Loading Error**: Verify dataset path and format
+3. **Qdrant Connection Error**: Ensure Qdrant server is running on specified host/port
+4. **Embedding Model Error**: Check embedding model path and ensure it's compatible
+
+### Debug Mode
+
+Enable debug logging by modifying the logging level in the script:
+
+```python
+logging.basicConfig(level=logging.DEBUG, ...)
 ```
 
-6. Compile LLVM IR to object file:
-```bash
-clang -c src/tail.ll -o tail.o
-```
+## Advanced Usage
 
-7. link the object file to the executable binary:
-```bash
-clang  -Wno-format-extra-args -Wno-implicit-const-int-float-conversion -Wno-tautological-constant-out-of-range-compare -g -O2 -Wl,--as-needed  -o src/tail src/tail.o src/iopoll.o src/libver.a lib/libcoreutils.a   lib/libcoreutils.a  -ldl
-```
+### Custom Prompts
 
-8. Run the test:
-```bash
-# make TESTS=tests/tail/overlay-headers.sh check VERBOSE=yes
-TAILTESTS=`make listtests | tr ' ' '\n' | grep '^tests/tail'`
-make check TESTS='${TAILTESTS}'
-```
-or
-```bash
-make check TESTS="$(make listtests | tr ' ' '\n' | grep '^tests/tail')"
-```
+You can modify the prompt templates in `utils/openai_helper.py`:
+- `GENERAL_INIT_PROMPT`: Basic decompilation prompt
+- `SIMILAR_RECORD_PROMPT`: In-context learning prompt
+- `format_compile_error_prompt`: Compile error fixing prompt
+- `format_execution_error_prompt`: Execution error fixing prompt
 
-Note we add the following code in the Makefile:
-```makefile
-listtests:
-	$(info VALUE of TESTS = $(TESTS))
-```
-The reason is that the `TESTS` variable contains all the tests for the `coreutils`.
+### Custom Evaluation
 
-## How to use ghdrid to analyze assembly:
-```bash
-./support/analyzeHeadless /tmp/myghidra/ qwen -import /home/xiachunwei/Projects/alpaca-lora-decompilation/validation/Qwen3-32B/sample_only_one_bb_Qwen3-32B-n8-assembly-with-comments/sample_92_retry_10/predict.o -postscript /home/xiachunwei/Projects/alpaca-lora-decompilation/analysis/test_ghidra.py -overwrite
-```
+The evaluation logic can be customized in the `evaluate_response` method to add additional validation criteria.
 
-## How to use vllm to serve Qwen-32B
-```bash
-export CUDA_VISIBLE_DEVICES=0,1 && vllm serve /home/xiachunwei/Datasets/Models/Qwen3-32B/ --dtype auto --port 9001 --max-model-len 32000 --api-key token-llm4decompilation-abc123 --gpu-memory-utilization 0.99 --swap-space 8 --tensor-parallel-size 2 --enforce-eager --served-model-name Qwen3-32B
-```
+### Batch Processing
+
+For batch processing, you can extend the tool to process multiple samples automatically by modifying the event handlers.
+
+## Contributing
+
+To extend the tool:
+
+1. Add new models to `SERVICE_CONFIG`
+2. Implement new evaluation metrics
+3. Add custom prompt templates
+4. Extend the UI with new components
+
+## License
+
+This tool is part of the LLM decompilation project. Please refer to the main project license.

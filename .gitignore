@@ -211,3 +211,5 @@ tmp.txt
 test.py
 *.out
 *.s
+tmp/
+tmp.*

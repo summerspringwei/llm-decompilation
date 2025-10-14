@@ -95,6 +95,68 @@ class AngrAnalyzer:
             simgr.step(num_inst=1)
             step_count += 1
    
+    def analyze_func_args(self, func_name):
+        target_function = self.get_function_by_name(func_name)
+        # Run variable recovery first
+        vra = self.proj.analyses.VariableRecoveryFast(target_function)
+
+        # Then run calling convention analysis with variable recovery results
+        cca = self.proj.analyses.CallingConvention(target_function, analyze_callsites=False)
+
+        # Print the results
+        print(type(cca))
+        print("Detected calling convention:", cca.cc)
+        print("Detected number of arguments:", cca.cc.arch)
+        for arg in cca.cc.int_args:
+            print(f"Argument: {arg}")
+    
+    def analyze_func_by_define_use(self, func_name):
+        # Run ReachingDefinitions analysis on the function
+        target_function = self.get_function_by_name(func_name)
+        rd = self.proj.analyses.ReachingDefinitions(target_function)
+        
+        # Print all uses for each instruction
+        for node in target_function.nodes():
+            block = self.proj.factory.block(node.addr)
+            print(f"\nBlock at {hex(node.addr)}:")
+            for insn in block.capstone.insns:
+                print(f"\nInstruction: {insn.mnemonic} {insn.op_str}")
+                # Get uses at this instruction address
+                uses = rd.all_uses.get_uses_by_location(insn.address)
+                if uses:
+                    print("Uses:")
+                    for use in uses:
+                        print(f"  - {use}")
+                else:
+                    print("No uses found")
+        # Print all definitions for each instruction
+        # used_regs = set()
+
+        # # Check each basic block in the function
+        # for block_addr in target_function.block_addrs:
+        #     # Get all ReachingDefinitions at the block's entry
+        #     rd_at_block = rd.definitions_at.get(block_addr, [])
+            
+        #     # We'll also want to analyze the block's statements to see reads
+        #     block = self.proj.factory.block(block_addr)
+        #     irsb = block.vex
+            
+        #     # For each statement in the block
+        #     for stmt in irsb.statements:
+        #         # Look for reads of argument registers before any write to that register
+        #         if stmt.tag == "Ist_WrTmp" and hasattr(stmt.data, "tag") and stmt.data.tag == "Iex_Get":
+        #             # Get the register name accessed
+        #             reg_offset = stmt.data.offset
+        #             reg_name = self.proj.arch.register_names.get(reg_offset, None)
+                    
+        #             if reg_name in arg_regs:
+        #                 # Check if this register was defined (written) earlier in this block or not
+        #                 # If not overwritten before, it's a use of argument register
+        #                 # Simplified: just record usage for now
+        #                 used_regs.add(reg_name)
+
+        # print(f"Argument registers used (likely function parameters): {used_regs}")
+        # print(f"Number of parameters inferred: {len(used_regs)}")
 
 
 def main():
@@ -107,6 +169,8 @@ def main():
     analyzer = AngrAnalyzer(proj)
     analyzer.get_all_address_in_function(func_name)
     analyzer.simulate(func_name, program_args=[binary_name, '17', '29'])
+    analyzer.analyze_func_args(func_name)
+    analyzer.analyze_func_by_define_use(func_name)
 
 if __name__ == "__main__":
     main()
