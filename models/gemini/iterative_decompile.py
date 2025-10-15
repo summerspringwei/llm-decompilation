@@ -14,7 +14,7 @@ from qdrant_client import QdrantClient
 from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
 from utils.preprocessing_assembly import preprocessing_assembly
 from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
-from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt
+from utils.openai_helper import extrac_llvm_code_from_response_text, format_compile_error_prompt, format_execution_error_prompt
 from models.rag.exebench_qdrant_base import load_embedding_model, find_similar_records_in_exebench_synth_rich_io
 from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT
 from models.rag.embedding_client import RemoteEmbeddingModel
@@ -136,45 +136,30 @@ class IterativeDecompilationTool:
     def generate_response_stream(self, prompt: str, num_generations: int = 8):
         """Generate response with streaming"""
         try:
+            # When n > 1, streaming typically doesn't work well
+            # Generate all completions without streaming
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "user", "content": prompt}],
                 n=num_generations,
-                stream=True,
+                stream=False,
                 timeout=7200
             )
             
-            full_response = ""
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    full_response += content
-                    yield full_response
+            # Extract all completions
+            responses = []
+            for choice in response.choices:
+                responses.append(choice.message.content)
             
-            return full_response
+            return responses
         except Exception as e:
-            yield f"Error generating response: {str(e)}"
+            return [f"Error generating response: {str(e)}"]
 
-    def evaluate_response(self, response_text: str, record) -> Dict:
+    def evaluate_response(self, response_text_list: List[str], record) -> Dict:
         """Evaluate the response and return validation results"""
         try:
-            # Create a mock response object for evaluation
-            class MockResponse:
-                def __init__(self, text):
-                    self.choices = [MockChoice(text)]
-            
-            class MockChoice:
-                def __init__(self, text):
-                    self.message = MockMessage(text)
-            
-            class MockMessage:
-                def __init__(self, text):
-                    self.content = text
-            
-            mock_response = MockResponse(response_text)
-            
             # Extract LLVM code
-            predict_list = extract_llvm_code_from_response(mock_response)
+            predict_list = [extrac_llvm_code_from_response_text(response_text) for response_text in response_text_list]
             
             # Create sample directory
             sample_dir = os.path.join(self.temp_dir, f"sample_{self.current_idx}")
@@ -237,7 +222,7 @@ class IterativeDecompilationTool:
             # Get original assembly
             original_asm = self.current_record["asm"]["code"][-1]
             original_asm = preprocessing_assembly(original_asm, remove_comments=self.remove_comments)
-            original_asm = f"```assembly\n{original_asm}\n```"
+            original_asm = f"{original_asm}"
             
             # Get original LLVM IR
             original_llvm = self.current_record["llvm_ir"]["code"][-1]
@@ -335,22 +320,54 @@ def create_gradio_interface():
                 
                 with gr.Tabs():
                     with gr.TabItem("Original Code"):
-                        c_func_def = gr.Textbox(label="C Function Definition", lines=3, max_lines=10)
-                        original_asm = gr.Markdown(label="Original Assembly")
-                        original_llvm = gr.Markdown(label="Original LLVM IR")
+                        c_func_def = gr.Code(label="C Function Definition", lines=3, max_lines=100, language="c")
+                        original_asm = gr.Code(label="Original Assembly", lines=3, max_lines=100, language="markdown")
+                        original_llvm = gr.Code(label="Original LLVM IR", lines=3, max_lines=100, language="markdown")
                     
                     with gr.TabItem("Similar Record (RAG)"):
                         similar_info = gr.Markdown(label="Similar Record Info")
                 
                 gr.Markdown("## Generation")
                 prompt = gr.Textbox(label="Generated Prompt", lines=10, max_lines=20)
-                num_generations = gr.Slider(minimum=1, maximum=16, value=8, step=1, label="Number of Generations")
+                num_generations = gr.Slider(minimum=1, maximum=8, value=8, step=1, label="Number of Generations")
                 generate_btn = gr.Button("Generate Response", variant="primary")
                 
-                gr.Markdown("## Generated Response")
-                response_output = gr.Textbox(label="Response", lines=15, max_lines=30)
+                gr.Markdown("## Generated Responses")
+                with gr.Tabs():
+                    response_tab_1 = gr.TabItem("Generation 1")
+                    with response_tab_1:
+                        response_1 = gr.Markdown(label="Response 1")
+                    
+                    response_tab_2 = gr.TabItem("Generation 2")
+                    with response_tab_2:
+                        response_2 = gr.Markdown(label="Response 2")
+                    
+                    response_tab_3 = gr.TabItem("Generation 3")
+                    with response_tab_3:
+                        response_3 = gr.Markdown(label="Response 3")
+                    
+                    response_tab_4 = gr.TabItem("Generation 4")
+                    with response_tab_4:
+                        response_4 = gr.Markdown(label="Response 4")
+                    
+                    response_tab_5 = gr.TabItem("Generation 5")
+                    with response_tab_5:
+                        response_5 = gr.Markdown(label="Response 5")
+                    
+                    response_tab_6 = gr.TabItem("Generation 6")
+                    with response_tab_6:
+                        response_6 = gr.Markdown(label="Response 6")
+                    
+                    response_tab_7 = gr.TabItem("Generation 7")
+                    with response_tab_7:
+                        response_7 = gr.Markdown(label="Response 7")
+                    
+                    response_tab_8 = gr.TabItem("Generation 8")
+                    with response_tab_8:
+                        response_8 = gr.Markdown(label="Response 8")
                 
-                gr.Markdown("## Evaluation Results")
+                gr.Markdown("## Evaluation")
+                evaluate_btn = gr.Button("Evaluate Responses", variant="primary")
                 evaluation_results = gr.JSON(label="Evaluation Results")
                 
                 gr.Markdown("## Predicted Code")
@@ -362,19 +379,18 @@ def create_gradio_interface():
         
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("## Error Fixing")
-                error_type = gr.Radio(
-                    choices=["compile_error", "execution_error"],
-                    value="compile_error",
-                    label="Error Type"
-                )
-                error_msg = gr.Textbox(label="Error Message", lines=3)
-                fix_prompt = gr.Textbox(label="Fix Prompt", lines=10, max_lines=20)
-                generate_fix_btn = gr.Button("Generate Fix", variant="primary")
+                gr.Markdown("## Evaluation Results Summary")
+                eval_summary = gr.Markdown(label="Evaluation Summary", value="No evaluation results yet")
                 
-                gr.Markdown("## Fixed Response")
-                fixed_response = gr.Textbox(label="Fixed Response", lines=15, max_lines=30)
-                fixed_evaluation = gr.JSON(label="Fixed Evaluation Results")
+                gr.Markdown("## Error Fixing")
+                selected_generation = gr.Dropdown(
+                    choices=[f"Generation {i+1}" for i in range(8)],
+                    value="Generation 1",
+                    label="Select Generation to Fix"
+                )
+                prepare_fix_btn = gr.Button("Prepare Fix Prompt", variant="secondary")
+                fix_prompt = gr.Textbox(label="Fix Prompt", lines=10, max_lines=20, interactive=True)
+                generate_fix_btn = gr.Button("Generate Fix", variant="primary")
         
         # Event handlers
         def setup_model_handler(model, host, port, qdrant_host, qdrant_port, embedding_url, icl):
@@ -387,34 +403,154 @@ def create_gradio_interface():
             return tool.load_sample(idx)
         
         def generate_response_handler(prompt_text, num_gen):
-            # Use Gradio's streaming capabilities
+            # Generate all responses
             try:
-                response_generator = tool.generate_response_stream(prompt_text, num_gen)
-                full_response = ""
-                for chunk in response_generator:
-                    full_response = chunk
-                    yield full_response
+                responses = tool.generate_response_stream(prompt_text, int(num_gen))
+                
+                # Format each response as markdown code block
+                formatted_responses = []
+                for i, response in enumerate(responses):
+                    formatted_responses.append(f"```llvm\n{response}\n```")
+                
+                # Pad with empty strings if less than 8 responses
+                while len(formatted_responses) < 8:
+                    formatted_responses.append("")
+                
+                # Return exactly 8 outputs for the 8 tabs
+                return formatted_responses[0], formatted_responses[1], formatted_responses[2], formatted_responses[3], formatted_responses[4], formatted_responses[5], formatted_responses[6], formatted_responses[7]
             except Exception as e:
-                yield f"Error generating response: {str(e)}"
+                error_msg = f"Error generating response: {str(e)}"
+                return error_msg, "", "", "", "", "", "", ""
         
-        def evaluate_response_handler(response_text):
-            if tool.current_record:
-                return tool.evaluate_response(response_text, tool.current_record)
-            return {"error": "No current record loaded"}
+        def evaluate_response_handler(resp1, resp2, resp3, resp4, resp5, resp6, resp7, resp8):
+            if not tool.current_record:
+                return {"error": "No current record loaded"}, "❌ No current record loaded"
+            
+            # Collect non-empty responses
+            all_responses = [resp1, resp2, resp3, resp4, resp5, resp6, resp7, resp8]
+            non_empty_responses = [r for r in all_responses if r and r.strip() != ""]
+            
+            if len(non_empty_responses) == 0:
+                return {"error": "No responses to evaluate"}, "❌ No responses to evaluate"
+            
+            eval_results = tool.evaluate_response(non_empty_responses, tool.current_record)
+            
+            # Generate summary with icons and colors
+            if "error" in eval_results:
+                summary = f"❌ **Error:** {eval_results['error']}"
+            else:
+                summary = "## Evaluation Results\n\n"
+                summary += "| Generation | Compile | Execute | Error Message |\n"
+                summary += "|------------|---------|---------|---------------|\n"
+                
+                compile_success_list = eval_results.get("predict_compile_success", [])
+                execution_success_list = eval_results.get("predict_execution_success", [])
+                error_msg_list = eval_results.get("predict_error_msg", [])
+                
+                for i in range(len(compile_success_list)):
+                    gen_num = i + 1
+                    compile_icon = "✅" if compile_success_list[i] else "❌"
+                    execute_icon = "✅" if execution_success_list[i] else "❌"
+                    error_msg = error_msg_list[i] if i < len(error_msg_list) else ""
+                    error_preview = error_msg[:50] + "..." if len(error_msg) > 50 else error_msg
+                    summary += f"| Generation {gen_num} | {compile_icon} | {execute_icon} | {error_preview} |\n"
+                
+                # Add target summary
+                target_compile = "✅" if eval_results.get("target_compile_success", False) else "❌"
+                target_execute = "✅" if eval_results.get("target_execution_success", False) else "❌"
+                summary += f"\n**Target LLVM:** Compile {target_compile} | Execute {target_execute}\n"
+            
+            return eval_results, summary
         
-        def prepare_fix_prompt_handler(error_type, error_msg, predicted_llvm, predicted_asm):
-            return tool.prepare_fix_prompt(error_type, error_msg, predicted_llvm, predicted_asm)
+        def prepare_fix_prompt_handler(selected_gen, eval_results, resp1, resp2, resp3, resp4, resp5, resp6, resp7, resp8):
+            """Prepare fix prompt based on selected generation"""
+            if not tool.current_record:
+                return "❌ No current record loaded"
+            
+            if not eval_results or "error" in eval_results:
+                return "❌ Please evaluate responses first"
+            
+            # Parse selected generation number
+            gen_num = int(selected_gen.split()[-1]) - 1  # "Generation 1" -> 0
+            
+            # Get the selected response
+            all_responses = [resp1, resp2, resp3, resp4, resp5, resp6, resp7, resp8]
+            selected_response = all_responses[gen_num]
+            
+            if not selected_response or selected_response.strip() == "":
+                return "❌ Selected generation is empty"
+            
+            # Get evaluation results for this generation
+            compile_success_list = eval_results.get("predict_compile_success", [])
+            execution_success_list = eval_results.get("predict_execution_success", [])
+            error_msg_list = eval_results.get("predict_error_msg", [])
+            predict_list = eval_results.get("predict_list", [])
+            
+            if gen_num >= len(compile_success_list):
+                return "❌ No evaluation results for this generation"
+            
+            compile_success = compile_success_list[gen_num]
+            execution_success = execution_success_list[gen_num]
+            error_msg = error_msg_list[gen_num] if gen_num < len(error_msg_list) else ""
+            predicted_llvm = predict_list[gen_num] if gen_num < len(predict_list) else ""
+            
+            # Determine error type and prepare prompt
+            target_asm_code = tool.current_record["asm"]["code"][-1]
+            target_asm_code = preprocessing_assembly(target_asm_code, remove_comments=tool.remove_comments)
+            
+            if not compile_success:
+                # Compile error
+                return format_compile_error_prompt(
+                    target_asm_code, predicted_llvm, error_msg,
+                    tool.in_context_learning,
+                    tool.similar_record["asm"]["code"][-1] if tool.similar_record else None,
+                    tool.similar_record["llvm_ir"]["code"][-1] if tool.similar_record else None
+                )
+            elif not execution_success:
+                # Execution error - need to get predicted assembly
+                try:
+                    sample_dir = os.path.join(tool.temp_dir, f"sample_{tool.current_idx}")
+                    success, asm_path, _ = compile_llvm_ir(predicted_llvm, sample_dir, f"predict_gen_{gen_num}")
+                    if success and asm_path:
+                        with open(asm_path, 'r') as f:
+                            predicted_asm = f.read()
+                    else:
+                        predicted_asm = ""
+                except:
+                    predicted_asm = ""
+                
+                return format_execution_error_prompt(
+                    target_asm_code, predicted_llvm, predicted_asm,
+                    tool.in_context_learning,
+                    tool.similar_record["asm"]["code"][-1] if tool.similar_record else None,
+                    tool.similar_record["llvm_ir"]["code"][-1] if tool.similar_record else None
+                )
+            else:
+                return "✅ This generation compiled and executed successfully! No fix needed."
         
         def generate_fix_handler(fix_prompt_text, num_gen):
-            # Use Gradio's streaming capabilities
+            # Generate fix responses
             try:
-                response_generator = tool.generate_response_stream(fix_prompt_text, num_gen)
-                full_response = ""
-                for chunk in response_generator:
-                    full_response = chunk
-                    yield full_response
+                responses = tool.generate_response_stream(fix_prompt_text, int(num_gen))
+                
+                # Format responses as markdown
+                formatted_output = ""
+                for i, response in enumerate(responses, 1):
+                    formatted_output += f"### Fix Generation {i}\n\n"
+                    formatted_output += f"```\n{response}\n```\n\n"
+                    formatted_output += "---\n\n"
+                
+                # Evaluate the fix
+                combined_response = "\n\n".join(responses)
+                if tool.current_record:
+                    eval_results = tool.evaluate_response(combined_response, tool.current_record)
+                else:
+                    eval_results = {"error": "No current record loaded"}
+                
+                return formatted_output, eval_results
             except Exception as e:
-                yield f"Error generating fix: {str(e)}"
+                error_msg = f"Error generating fix: {str(e)}"
+                return error_msg, {"error": str(e)}
         
         # Connect events
         setup_btn.click(
@@ -438,21 +574,22 @@ def create_gradio_interface():
         generate_btn.click(
             generate_response_handler,
             inputs=[prompt, num_generations],
-            outputs=response_output,
+            outputs=[response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8],
             api_name="generate_response"
         )
         
-        # Auto-evaluate when response is generated (only after completion)
-        def on_response_complete(response_text):
-            # Only evaluate if we have a complete response (not streaming)
-            if response_text and len(response_text) > 100 and not response_text.startswith("Error"):
-                return evaluate_response_handler(response_text)
-            return {"status": "Waiting for complete response..."}
+        # Evaluate button click
+        evaluate_btn.click(
+            evaluate_response_handler,
+            inputs=[response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8],
+            outputs=[evaluation_results, eval_summary]
+        )
         
-        response_output.change(
-            on_response_complete,
-            inputs=response_output,
-            outputs=evaluation_results
+        # Prepare fix prompt button
+        prepare_fix_btn.click(
+            prepare_fix_prompt_handler,
+            inputs=[selected_generation, evaluation_results, response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8],
+            outputs=fix_prompt
         )
         
         # Update predicted code when evaluation changes
@@ -489,36 +626,13 @@ def create_gradio_interface():
             outputs=[predicted_llvm, predicted_asm]
         )
         
-        # Prepare fix prompt
-        error_type.change(
-            prepare_fix_prompt_handler,
-            inputs=[error_type, error_msg, predicted_llvm, predicted_asm],
-            outputs=fix_prompt
-        )
-        error_msg.change(
-            prepare_fix_prompt_handler,
-            inputs=[error_type, error_msg, predicted_llvm, predicted_asm],
-            outputs=fix_prompt
-        )
-        predicted_llvm.change(
-            prepare_fix_prompt_handler,
-            inputs=[error_type, error_msg, predicted_llvm, predicted_asm],
-            outputs=fix_prompt
-        )
-        predicted_asm.change(
-            prepare_fix_prompt_handler,
-            inputs=[error_type, error_msg, predicted_llvm, predicted_asm],
-            outputs=fix_prompt
-        )
-        
+        # Generate fix button
         generate_fix_btn.click(
-            generate_fix_handler,
+            generate_response_handler,
             inputs=[fix_prompt, num_generations],
-            outputs=[fixed_response, fixed_evaluation],
+            outputs=[response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8],
             api_name="generate_fix"
         )
-        
-        # Fixed response evaluation is now handled by the button click events
     
     return interface
 

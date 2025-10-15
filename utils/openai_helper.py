@@ -22,6 +22,17 @@ def extract_llvm_code(markdown_content: str):
     return llvm_code_blocks
 
 
+def extrac_llvm_code_from_response_text(result: str)-> str:
+    if result.find("</think>") > -1:
+        result = result.split("</think>")[-1].strip()
+    llvm_code = extract_llvm_code(result)
+    if isinstance(llvm_code, list) and len(llvm_code) > 0:
+        llvm_code = llvm_code[0]
+    if len(llvm_code) == 0:
+        logger.warning(f"No LLVM code found in the response: {result}")
+    return llvm_code
+
+
 def extract_llvm_code_from_response(response)->List[str]:
     predict_llvm_code_list = []
     if response.choices and len(response.choices) > 0:
@@ -32,17 +43,14 @@ def extract_llvm_code_from_response(response)->List[str]:
                 logger.info(f"No result found in the response")
                 predict_llvm_code_list.append("")
                 continue
-            elif result.find("</think>") > -1:
-                result = result.split("</think>")[-1].strip()
-            llvm_code = extract_llvm_code(result)
-            if isinstance(llvm_code, list) and len(llvm_code) > 0:
-                llvm_code = llvm_code[0]
-            if len(llvm_code) == 0:
-                logger.warning(f"No LLVM code found in the response: {result}")
+            llvm_code = extrac_llvm_code_from_response_text(result)
             predict_llvm_code_list.append(llvm_code)
     else:
         logger.warning("No choices found in the response.")
     return predict_llvm_code_list
+
+
+
 
 
 BASIC_DECOMPILE_TEMPLATE = """
