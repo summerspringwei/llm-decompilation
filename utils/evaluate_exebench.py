@@ -30,8 +30,11 @@ def compile_llvm_ir(llvm_ir: str, compile_dir: str, name_hint)->tuple[bool, str]
         success: bool, true if the compilation is successful.
         assembly_path: str, the path of the compiled assembly code.
     """
+    if not os.path.exists(compile_dir):
+        os.makedirs(compile_dir, exist_ok=True)
     llvm_ir_path = os.path.join(compile_dir, f"{name_hint}.ll")
     assembly_path = os.path.join(compile_dir, f"{name_hint}.s")
+    object_file_path = os.path.join(compile_dir, f"{name_hint}.o")
     error_path = os.path.join(compile_dir, f"{name_hint}.error")
     success = False
     error_msg = ""
@@ -44,6 +47,8 @@ def compile_llvm_ir(llvm_ir: str, compile_dir: str, name_hint)->tuple[bool, str]
     try:
         # 3. Compile the llvm ir to assembly
         cmd = ["llc", llvm_ir_path, "-o", assembly_path]
+        ret = subprocess.run(cmd, capture_output=True)
+        cmd = ["llc", llvm_ir_path, "-filetype=obj", "-o", object_file_path]
         ret = subprocess.run(cmd, capture_output=True)
         if ret.returncode == 0:
             success = True

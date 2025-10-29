@@ -8,7 +8,6 @@ from datasets import load_from_disk
 from multiprocessing import Pool
 from tqdm import tqdm
 
-
 from exebench import Wrapper, LLVMAssembler
 
 _DEFAULT_CMD_TIMEOUT = 60 # Increased timeout just in case Ghidra takes time to load
@@ -29,15 +28,33 @@ def _run_command(
     return output.returncode, stdout, stderr
 
 
-class ObjectFileDecompiler:
+# Try to get ghidra_script_path from environment variable first
+ghidra_home = os.environ.get("GHIDRA_HOME")
+if ghidra_home:
+    ghidra_script_path = os.path.join(ghidra_home, "support/analyzeHeadless")
+else:
+    # Fall back to hardcoded path if env var not set
+    ghidra_script_path = "/data1/xiachunwei/Software/ghidra_11.4.2_PUBLIC/support/analyzeHeadless"
+
+
+class GhidraResult:
+    def __init__(self):
+        self.ghidra_decompiled_raw_string = None
+        self.ghidra_decompiled_error_msg = None
+        self.ghidra_decompiled_error_code = None
+        self.ghidra_decompiled_c_code = None
+
+
+class GhidraObjectFileDecompiler:
     def __init__(self, record):
         self.idx = -1
         self.record = record
         self.object_file_path = None
         self.synth_wrapper = None
         self.func_name = record["func_info"]["functions"][0]["name"]
-    
-
+        self.func_def = record["func_def"]
+        self.ghidra_result = None
+        
     def compile_to_object_file(self, output_dir: str, name_hint: str):
         """compile the llvm ir to object file"""
         object_file_path = f"{output_dir}/{name_hint}.o"
@@ -51,7 +68,6 @@ class ObjectFileDecompiler:
             raise RuntimeError(f"Failed to compile the function to object file: {stderr}")
         return object_file_path
 
-    
     def compile_to_executable(self, record) -> str: # Pass record as an argument
         """compile the object file to executable"""
         try:
@@ -71,8 +87,6 @@ class ObjectFileDecompiler:
 
     def extract_c_code(self, stdout: str) -> str:
         """Extract C code between ```C and ``` markers from Ghidra output"""
-        
-        
         # Look for C code between ```C and ``` markers
         match = re.search(r'```C\n(.*?)```', stdout, re.DOTALL)
         if match:
@@ -80,25 +94,21 @@ class ObjectFileDecompiler:
         return None
 
 
-
-
-
-def process_record(args):
+def ghdria_decompile_record(args):
     """Process a single record with decompilation"""
     idx, record = args
-    ghidra_script_path = "/home/xiachunwei/Software/ghidra/ghidra_11.4_PUBLIC/support/analyzeHeadless"
     
     try:
-        decompiler = ObjectFileDecompiler(record)
+        decompiler = GhidraObjectFileDecompiler(record)
         decompiler.idx = idx
         with tempfile.TemporaryDirectory() as tmp_dir:
             object_file_path = decompiler.compile_to_object_file(tmp_dir, decompiler.func_name)
             # It's better to create a unique project directory for each run
-            project_dir = f"/tmp/myghidra_{idx}" 
+            project_dir = f"/tmp/myghidra_{idx}_{decompiler.func_name}" 
             if not os.path.exists(project_dir):
                 os.makedirs(project_dir)
-            project_name = f"project_{idx}"
-            script_path = "models/ghidra_decompile/ghidra_decompile.py"
+            project_name = f"project_{idx}_{decompiler.func_name}"
+            script_path = "models/ghidra_decompile/ghidra_decompile_script.py"
 
             # --- THIS IS THE CORRECTED LINE ---
             # 1. Removed the incorrect "-h" flag.
@@ -112,34 +122,34 @@ def process_record(args):
                 "-postscript", script_path, 
                 decompiler.func_name
             ]
-            
             retcode, stdout, stderr = _run_command(cmd, timeout=_DEFAULT_CMD_TIMEOUT)
-            print()
-            print("idx:", idx)
-            c_code = decompiler.extract_c_code(stdout)
-            print(c_code)
-            print("="*100)
-            print(decompiler.record['func_def'])
-            print("="*100)
             if retcode != 0:
                 # Check if the error is just the "project exists" error, which can sometimes happen
                 if "project exists" not in stderr:
                      raise RuntimeError(f"Failed to run ghidra: {stderr}")
-            
+            else:
+                ghidra_result = GhidraResult()
+                ghidra_result.ghidra_decompiled_raw_string = stdout
+                ghidra_result.ghidra_decompiled_error_msg = stderr
+                ghidra_result.ghidra_decompiled_error_code = retcode
+                ghidra_result.ghidra_decompiled_c_code = decompiler.extract_c_code(stdout)
+                decompiler.ghidra_result = ghidra_result
+                
             return decompiler
     except Exception as e:
         print(f"Error processing record {idx}: {e}")
         return None
 
+
 def main(dataset_path: str, num_processes: int = 4):
     dataset = load_from_disk(dataset_path)
     # Create a list of (idx, record) tuples for processing
     records_with_idx = list(enumerate(dataset))
-    
+    records_with_idx = [(idx, record) for idx, record in records_with_idx]
     with Pool(processes=num_processes) as pool:
         # Process records in parallel with progress bar
         results = list(tqdm(
-            pool.imap(process_record, records_with_idx),
+            pool.imap(ghdria_decompile_record, records_with_idx),
             total=len(records_with_idx),
             desc="Processing records",
             unit="record"
@@ -147,11 +157,12 @@ def main(dataset_path: str, num_processes: int = 4):
     
     return results
 
+
 if __name__ == "__main__":
     
     dataset_path_file_tyypes = {
-        ("/home/xiachunwei/Datasets/filtered_exebench/sampled_dataset_without_loops_164", "sampled_dataset_without_loops_164_ghidra_decompile"),
-        ("/home/xiachunwei/Datasets/filtered_exebench/sampled_dataset_with_loops_164", "sampled_dataset_with_loops_164_ghidra_decompile"),
+        ("/data1/xiachunwei/Datasets/filtered_exebench/sampled_dataset_without_loops_164", "sampled_dataset_without_loops_164_ghidra_decompile"),
+        # ("/home/xiachunwei/Datasets/filtered_exebench/sampled_dataset_with_loops_164", "sampled_dataset_with_loops_164_ghidra_decompile"),
         # ("/home/xiachunwei/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164", "sampled_dataset_with_loops_and_only_one_bb_164_ghidra_decompile"),
     }
     for dataset_path, file_name in dataset_path_file_tyypes:

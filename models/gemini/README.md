@@ -29,7 +29,7 @@ export ARK_STREAM_API_KEY="your_ark_stream_api_key"  # For Huoshan-DeepSeek-R1
 export OPENAI_API_KEY="your_openai_api_key"         # For OpenAI-GPT-4.1
 ```
 
-### 3. Model Server Setup
+### 3. LLM Server Setup
 
 For local models (Qwen3-32B, Qwen3-30B-A3B), ensure your model server is running:
 
@@ -38,19 +38,36 @@ export CUDA_VISIBLE_DEVICES=0,1 && vllm serve /data1/xiachunwei/Datasets/Models/
 ```
 
 
-### 4. Qdrant Setup
+### 4. RAG service Setup
 
 For RAG functionality, ensure Qdrant is running:
 
-```bash
+```shell
 # Start Qdrant server
-docker run -p 6333:6333 qdrant/qdrant
+cd path/to/qdrant
+./target/release/qdrant
+```
+
+You will see:
+```bash
+(base) xiachunwei@amax:~/Software/qdrant$ target/release/qdrant                                                                                           
+           _                 _                                                                                                                            
+  __ _  __| |_ __ __ _ _ __ | |_                                                                                                                          
+ / _` |/ _` | '__/ _` | '_ \| __|                                                                                                                         
+| (_| | (_| | | | (_| | | | | |_                                                                                                                          
+ \__, |\__,_|_|  \__,_|_| |_|\__|                                                                                                                         
+    |_|                                                                                                                                                   
+                                                                                                                                                          
+Version: 1.15.1, build: af7ab5b1                                                                                                                          
+Access web UI at http://localhost:6333/dashboard 
+...
 ```
 
 Start embedding model service:
 ```bash
 python3 models/rag/embedding_service.py
 ```
+
 ## Usage
 
 ### 1. Start the Tool
