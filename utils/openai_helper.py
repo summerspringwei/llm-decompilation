@@ -61,6 +61,18 @@ The result is not right. Please compare the generated assembly with the original
 Place the final generated LLVM IR code between ```llvm and ```.
 """
 
+TEST_ERROR_TEMPLATE_WITH_GHIDRA_DECOMPILE_PREDICT = """
+Then you generated the following LLVM IR: ```llvm\n{predict}```\n 
+However your generated LLVM IR is not right. 
+To help you correct the LLVM IR, I provide the Ghidra decompiled C code for your provided LLVM IR:
+```C
+{predict_ghidra_c_code}
+```
+Please compare the original decompiled Ghidra C code with your generated LLVM IR and corresponding Ghidra C code, 
+find the differences and correct the LLVM IR.\n
+Place the final generated LLVM IR code between ```llvm and ```.
+"""
+
 GHIDRA_DECOMPILE_TEMPLATE = """
 Please decompile the assembly code to LLVM IR.
 ```assembly
@@ -96,6 +108,14 @@ def format_execution_error_prompt(first_prompt, predict, predict_assembly):
         predict_assembly=predict_assembly
     )
 
+    return prompt
+
+
+def format_execution_error_prompt_with_ghidra_decompile_predict(first_prompt, predict, predict_ghidra_c_code):
+    prompt = first_prompt + TEST_ERROR_TEMPLATE_WITH_GHIDRA_DECOMPILE_PREDICT.format(
+        predict=predict,
+        predict_ghidra_c_code=predict_ghidra_c_code
+    )
     return prompt
 
 

@@ -26,7 +26,7 @@ def load_embedding_model(model_path="/data1/xiachunwei/Datasets/Models/Qwen3-Emb
     return model
 
 
-def get_embeddings(texts, model, batch_size=64)->list[np.ndarray]:
+def get_embeddings(texts, embedding_client, batch_size=64)->list[np.ndarray]:
     """Generate embeddings for a list of texts using vLLM."""
     embeddings = []
     
@@ -34,9 +34,9 @@ def get_embeddings(texts, model, batch_size=64)->list[np.ndarray]:
         batch_texts = texts[i:i + batch_size]
         
         # Generate embeddings using vLLM
-        outputs = model.embed(batch_texts)
-        batch_embeddings = torch.tensor([o.outputs.embedding for o in outputs])
-        embeddings.extend(batch_embeddings.cpu().numpy())
+        outputs = embedding_client.embeddings.create(input = batch_texts, model="Qwen3-Embedding-8B", encoding_format='float')
+        batch_embeddings = torch.tensor([o.embedding for o in outputs.data])
+        embeddings.extend(batch_embeddings)
     
     return embeddings
 
@@ -115,7 +115,7 @@ def build_qdrant_database(dataset, client, model, collection_name="assembly_code
     return client, collection_name
 
 
-def search_similar_records(client, collection_name, model, query_record, top_k=3, pre_process_asm_code=True):
+def search_similar_records(client, collection_name, embedding_client, query_record, top_k=3, pre_process_asm_code=True):
     """Search for similar records in the database."""
 
     # Extract assembly code from query record
@@ -127,8 +127,7 @@ def search_similar_records(client, collection_name, model, query_record, top_k=3
         raise ValueError("Query record does not contain assembly code")
     
     # Generate embedding for query
-    outputs = model.embed([query_assembly])
-    query_embedding = torch.tensor([o['outputs']['embedding'] for o in outputs])[0].cpu().numpy()
+    query_embedding = embedding_client.embeddings.create(input = [query_assembly], model="Qwen3-Embedding-8B", encoding_format='float').data[0].embedding
     
     # Search in Qdrant
     search_results = client.search(

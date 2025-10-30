@@ -66,6 +66,8 @@ Access web UI at http://localhost:6333/dashboard
 Start embedding model service:
 ```bash
 python3 models/rag/embedding_service.py
+
+vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B --task embed --served-model-name Qwen3-Embedding-8B --port 8001
 ```
 
 ## Usage

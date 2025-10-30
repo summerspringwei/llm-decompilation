@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from exebench import Wrapper, LLVMAssembler
 
-_DEFAULT_CMD_TIMEOUT = 60 # Increased timeout just in case Ghidra takes time to load
+_DEFAULT_CMD_TIMEOUT = 90 # Increased timeout just in case Ghidra takes time to load
 
 def _run_command(
         command, # command is a list of strings, not a single string
@@ -83,7 +83,36 @@ class GhidraObjectFileDecompiler:
         except Exception as e:
             raise RuntimeError(f"Failed to compile the function to executable: {e}")
         return self.synth_wrapper._compiled_exe_path
-    
+
+
+    def decompile_external_assembly(self, assembly: str, func_name: str) -> str:
+        """decompile the external assembly"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            object_file_path = f"{tmp_dir}/{func_name}.o"
+            assembly_file_path = f"{tmp_dir}/{func_name}.s"
+            with open(assembly_file_path, "w") as f:
+                f.write(assembly)
+            cmd = ["clang", assembly_file_path, "-o", object_file_path]
+            retcode, stdout, stderr = _run_command(cmd, timeout=30)
+            if retcode != 0:
+                raise RuntimeError(f"Failed to compile the assembly to object file: {stderr}")
+            project_name = f"project_{self.idx}_predict_{func_name}"
+            script_path = "models/ghidra_decompile/ghidra_decompile_script.py"
+            cmd = [
+                ghidra_script_path, 
+                tmp_dir, 
+                project_name, 
+                "-import", object_file_path,  
+                "-overwrite", # This will delete the project each time, which is good for loops
+                "-postscript", script_path, 
+                func_name
+            ]
+            retcode, stdout, stderr = _run_command(cmd, timeout=_DEFAULT_CMD_TIMEOUT)
+            if retcode != 0:
+                raise RuntimeError(f"Failed to run ghidra: {stderr}")
+            else:
+                return self.extract_c_code(stdout)
+
 
     def extract_c_code(self, stdout: str) -> str:
         """Extract C code between ```C and ``` markers from Ghidra output"""
@@ -104,7 +133,7 @@ def ghdria_decompile_record(args):
         with tempfile.TemporaryDirectory() as tmp_dir:
             object_file_path = decompiler.compile_to_object_file(tmp_dir, decompiler.func_name)
             # It's better to create a unique project directory for each run
-            project_dir = f"/tmp/myghidra_{idx}_{decompiler.func_name}" 
+            project_dir = f"{tmp_dir}/myghidra_{idx}_{decompiler.func_name}" 
             if not os.path.exists(project_dir):
                 os.makedirs(project_dir)
             project_name = f"project_{idx}_{decompiler.func_name}"

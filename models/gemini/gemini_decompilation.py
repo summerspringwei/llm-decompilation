@@ -2,6 +2,7 @@ import os
 import pickle
 import argparse
 from multiprocessing import Pool
+import faulthandler, signal
 
 from openai import OpenAI
 from datasets import load_from_disk, Dataset
@@ -45,7 +46,7 @@ def parse_args():
 
     parser.add_argument('--embedding_model',
                         type=str,
-                        default="http://localhost:8001",
+                        default="http://localhost:8001/v1",
                         help='Embedding model to use for RAG')
 
     parser.add_argument('--prompt-type',
@@ -59,7 +60,9 @@ args = parse_args()
 model = args.model
 host = args.host
 port = args.port
-embedding_model = RemoteEmbeddingModel(args.embedding_model)
+# embedding_model = RemoteEmbeddingModel(args.embedding_model)
+
+embedding_client = OpenAI(api_key="abcd", base_url=args.embedding_model)
 prompt_type = PromptType(args.prompt_type)
 qdrant_client = QdrantClient(host=args.qdrant_host, port=args.qdrant_port)
 dataset_for_qdrant_dir = f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff"
@@ -86,12 +89,14 @@ client, model_name = SERVICE_CONFIG[model]
 
 
 def decompile_func(record, idx, output_dir, model_name: str, prompt_type: PromptType, remove_comments: bool = True, num_generate: int = 8):
-    llm_decompile_record = LLMDecompileRecord(record, idx, client, model_name, num_generate, output_dir, prompt_type, remove_comments, embedding_model=embedding_model)
+    faulthandler.register(signal.SIGUSR1)
+    llm_decompile_record = LLMDecompileRecord(record, idx, client, model_name, num_generate, output_dir, prompt_type, remove_comments, embedding_client=embedding_client, embedding_model_name="Qwen3-Embedding-8B")
     llm_decompile_record.get_initial_prompt()
     llm_decompile_record.decompile_and_evaluate(llm_decompile_record.initial_prompt, -1)
     llm_decompile_record.correct_one()
     # Remove unpickleable objects before returning for multiprocessing
     llm_decompile_record.llm_client = None
+    llm_decompile_record.embedding_client = None
     return llm_decompile_record
 
 
@@ -163,13 +168,13 @@ if __name__ == "__main__":
             f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
             f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
         ),
-        (
-            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
-            f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-        ),
+        # (
+        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
+        #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
+        # ),
     ]
     for dataset_dir_path, response_output_dir in dataset_paires:
         if not os.path.exists(response_output_dir):
             os.makedirs(response_output_dir, exist_ok=True)
-        main(dataset_dir_path, response_output_dir, num_processes=16, remove_comments=remove_comments, prompt_type=prompt_type, num_generate=8)
+        main(dataset_dir_path, response_output_dir, num_processes=32, remove_comments=remove_comments, prompt_type=prompt_type, num_generate=8)
         
