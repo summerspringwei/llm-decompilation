@@ -9,17 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI
-from openai._types import NOT_GIVEN, NotGiven
-from openai.types.chat import ChatCompletionMessageParam
-from openai.types.create_embedding_response import CreateEmbeddingResponse
-from typing import Union, Literal
+from typing import Union, Literal, List
 
 from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
 from utils.preprocessing_assembly import preprocessing_assembly
 from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
-from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt, format_execution_error_prompt_with_ghidra_decompile_predict
+from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt, format_execution_error_prompt_with_ghidra_decompile_predict, format_llm_fix_prompt
 from models.rag.exebench_qdrant_base import find_similar_records_in_exebench_synth_rich_io
-from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT, GHIDRA_DECOMPILE_TEMPLATE
+from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT, GHIDRA_DECOMPILE_TEMPLATE, PromptType
 from models.ghidra_decompile.ghidra_decompile_exebench import ghdria_decompile_record
 
 from utils.mylogger import logger
@@ -53,7 +50,7 @@ class ResponseValidation:
         return sum(1 for result in self.predict_evaluation_results_list if result.compile_success)
     
     def get_first_compile_success_evaluation_result(self) -> EvaluationResult:
-        return next((result for result in self.predict_evaluation_results_list if result.compile_success), self.predict_evaluation_results_list[0])
+        return next((result for result in self.predict_evaluation_results_list if result.compile_success), None)
 
     def get_num_total(self) -> int:
         return len(self.predict_evaluation_results_list)
@@ -66,16 +63,6 @@ class ResponseValidation:
                 break
 
 
-class PromptType(Enum):
-    BASIC = "basic"
-    SIMILAR_RECORD = "in-context-learning"
-    GHIDRA_DECOMPILE = "ghidra-decompile"
-    GHIDRA_DECOMPILE_WITH_PREDICT = "ghidra-decompile-with-predict"
-    def __str__(self):
-        return self.value
-
-    def __repr__(self):
-        return self.value
 
 
 class LLMDecompileRecord:
@@ -93,7 +80,8 @@ class LLMDecompileRecord:
                  embedding_client=None,
                  embedding_model_name="Qwen3-Embedding-8B",
                  qdrant_client=None,
-                 dataset_for_qdrant_dir=None
+                 dataset_for_qdrant_dir=None,
+                 fix_prompt_type: PromptType = PromptType.COMPILE_FIX
                  ):
         self.record = record
         self.idx = idx
@@ -102,6 +90,7 @@ class LLMDecompileRecord:
         self.num_generate = num_generate
         self.output_dir = output_dir
         self.prompt_type = prompt_type
+        self.fix_prompt_type = fix_prompt_type
         self.remove_comments = remove_comments
         self.embedding_client = embedding_client
         self.qdrant_client = qdrant_client
@@ -112,6 +101,7 @@ class LLMDecompileRecord:
         self.score = None
         self.initial_prompt = None
         self.embedding_model_name = embedding_model_name
+        
         # self.initial_prompt = self.get_initial_prompt()
 
     def prepare_basic_prompt(self):
@@ -172,7 +162,10 @@ class LLMDecompileRecord:
         response_file_path = os.path.join(
             self.output_dir, f"response_{self.idx}.pkl" if retry_count == -1
             else f"response_{self.idx}_retry_{retry_count}.pkl")
-
+        prompt_path = os.path.join(self.output_dir, f"prompt_{self.idx}.pkl" if retry_count == -1
+            else f"prompt_{self.idx}_retry_{retry_count}.pkl")
+        if not os.path.exists(prompt_path):
+            pickle.dump(prompt, open(prompt_path, "wb"))
         if os.path.exists(response_file_path):
             response = pickle.load(open(response_file_path, "rb"))
         else:
@@ -271,21 +264,22 @@ class LLMDecompileRecord:
         elif len(compilable_assembly_list) == 1:
             return predict_evaluation_results_list[compilable_assembly_list[0][0]]
 
-        # TODO(Chunwei) Debug only
-        # query_vector = self.get_embedding([target_assembly])
-        # compilable_assembly_vectors = self.get_embedding([r[1] for r in compilable_assembly_list])
-        # query_tensor = torch.tensor(query_vector, dtype=torch.float32)
-        # compilable_tensors = torch.tensor(np.array(compilable_assembly_vectors), dtype=torch.float32)
+        try:
+            query_vector = self.get_embedding([target_assembly])
+            compilable_assembly_vectors = self.get_embedding([r[1] for r in compilable_assembly_list])
+            query_tensor = torch.tensor(query_vector, dtype=torch.float32)
+            compilable_tensors = torch.tensor(np.array(compilable_assembly_vectors), dtype=torch.float32)
 
-        # # Calculate cosine similarity between the query vector and all compilable assembly vectors
-        # # Unsqueeze query_tensor to (1, embedding_dim) to enable batch comparison with F.cosine_similarity
-        # similarities = torch.nn.functional.cosine_similarity(query_tensor.unsqueeze(0), compilable_tensors)
+            # Calculate cosine similarity between the query vector and all compilable assembly vectors
+            # Unsqueeze query_tensor to (1, embedding_dim) to enable batch comparison with F.cosine_similarity
+            similarities = torch.nn.functional.cosine_similarity(query_tensor.unsqueeze(0), compilable_tensors)
 
-        # # Find the index of the maximum similarity
-        # most_similar_idx = torch.argmax(similarities).item()
-        # Retrieve the assembly string corresponding to the most similar embedding
+            # Find the index of the maximum similarity
+            most_similar_idx = torch.argmax(similarities).item()
+        except Exception as e:
+            logger.error(f"Error in getting most similar predict: {e}")
+            most_similar_idx = compilable_assembly_list[0][0]
 
-        most_similar_idx = 0
         if most_similar_idx >= len(compilable_assembly_list):
             logger.warning(f"Most similar index {most_similar_idx} is out of range {len(compilable_assembly_list)}")
             most_similar_idx = compilable_assembly_list[0][0]
@@ -295,7 +289,7 @@ class LLMDecompileRecord:
         return predict_evaluation_results_list[most_similar_idx]
 
 
-    def prepare_fix_prompt(self, retry_count):
+    def prepare_compile_fix_prompt(self, retry_count):
         sample_dir = os.path.join(self.output_dir,
                                   f"sample_{self.idx}_retry_{retry_count}")
         if not os.path.exists(sample_dir):
@@ -362,6 +356,8 @@ class LLMDecompileRecord:
         retry_count = 0
         fix_success = False
         sample_dir = os.path.join(self.output_dir, f"sample_{self.idx}")
+        if not os.path.exists(sample_dir):
+            os.makedirs(sample_dir, exist_ok=True)
         while retry_count < self.num_retry and not fix_success:
             
             if self.retry_response_validation[retry_count - 1].get_num_execution_success() > 0:
@@ -371,7 +367,10 @@ class LLMDecompileRecord:
                 break
 
             # 2. Prepare the prompt for the next retry
-            prompt = self.prepare_fix_prompt(retry_count)
+            if self.fix_prompt_type == PromptType.LLM_FIX and self.get_most_similar_evaluation_result(retry_count) is not None:
+                prompt = self.prepare_llm_fix_prompt(retry_count)
+            else:
+                prompt = self.prepare_compile_fix_prompt(retry_count)
 
             # 3. Decompile and evaluate the prompt
             self.decompile_and_evaluate(
@@ -418,4 +417,133 @@ class LLMDecompileRecord:
             response = pickle.load(open(response_file, "rb"))
             self.evaluate_response(self.initial_prompt, response, retry_count)
             
+    def execution_success(self) -> bool:
+        for _, response_validation in self.retry_response_validation.items():
+            execution_list = [result.execution_success for result in response_validation.predict_evaluation_results_list]
+            if any(execution_list):
+                return True
+        return False
     
+    def compile_success(self) -> bool:
+        for _, response_validation in self.retry_response_validation.items():
+            compile_list = [result.compile_success for result in response_validation.predict_evaluation_results_list]
+            if any(compile_list):
+                return True
+        return False
+    
+    def get_execution_success_retry_count(self) -> [int | None]:
+        for idx, response_validation in self.retry_response_validation.items():
+            execution_list = [result.execution_success for result in response_validation.predict_evaluation_results_list]
+            if any(execution_list):
+                return idx
+        return None
+    
+    def get_execution_success_evaluation_result(self) -> EvaluationResult:
+        for _, response_validation in self.retry_response_validation.items():
+            execution_list = [result.execution_success for result in response_validation.predict_evaluation_results_list]
+            if any(execution_list):
+                return response_validation.predict_evaluation_results_list[execution_list.index(True)]
+        return None
+
+
+    def get_most_similar_evaluation_result(self, retry_count: int) -> EvaluationResult:
+        most_similar_evaluation_result = self.retry_response_validation[retry_count - 1].get_first_compile_success_evaluation_result()
+        # If we can't find the compile success evaluation result, we search all current retry
+        if most_similar_evaluation_result is None:
+            for _, response_validation in self.retry_response_validation.items():
+                for evaluation_result in response_validation.predict_evaluation_results_list:
+                    if evaluation_result.compile_success:
+                        most_similar_evaluation_result = evaluation_result
+                        break
+                if most_similar_evaluation_result is not None:
+                    break
+        # If we still can't find the compile success evaluation result, we return None
+        if most_similar_evaluation_result is None:
+            logger.error(f"Failed to find the compile success evaluation result for index {self.idx} after {retry_count} retries.")
+            return None
+        return most_similar_evaluation_result
+
+
+    def build_failure_analysis_prompt(
+        self,
+        retry_count: int | None,
+    ) -> str:
+        target_assembly = self.record["asm"]["code"][-1]
+        #TODO
+        most_similar_evaluation_result = self.get_most_similar_evaluation_result(retry_count)
+        if most_similar_evaluation_result is None:
+            return None
+        predicted_llvm_ir = most_similar_evaluation_result.llvm_ir or ""
+        predicted_assembly = most_similar_evaluation_result.assembly or ""
+        compile_error = most_similar_evaluation_result.error_msg or ""
+
+        sections: List[str] = []
+        sections.append(
+            "You are a compiler expert. Analyze why the predicted LLVM IR fails to match the ground-truth behavior."
+        )
+        if target_assembly:
+            sections.append("Reference Assembly Produced From Ground Truth (if available):\n\n" + target_assembly)
+        sections.append("Predicted LLVM IR (failing):\n\n" + predicted_llvm_ir)
+        if predicted_assembly:
+            sections.append("Assembly Produced From Predicted IR (if compiled):\n\n" + predicted_assembly)
+        if compile_error.strip() != "":
+            sections.append("Compiler Diagnostics For Predicted IR (if it failed to compile):\n\n" + compile_error)
+
+        sections.append(
+            "Instructions:\n"
+            "1) Compare reference assembly and predicted assembly semantics precisely (types, signedness, control-flow, memory operations, calling conventions, data layout, attributes, metadata).\n"
+            "2) Identify exact mismatches that change observable behavior versus the assembly (e.g., incorrect GEP indices, missing 'nsw/nuw', wrong 'zext/sext', PHI node shape, loop bounds, UB triggers, aliasing, volatile/atomic, pointer casts/address spaces, byval/byref, linkage/visibility).\n"
+            "3) If compilation failed, map diagnostics to the exact IR locations and propose minimal fixes.\n"
+            "4) Summarize root causes and concrete corrective edits to the predicted IR."
+            "5) Please provide the detailed steps to fix the predicted IR."
+        )
+
+        return "\n\n".join(sections)
+
+
+    def prepare_llm_fix_prompt(self, retry_count: int | None) -> str:
+        # 1. Build the failure analysis prompt
+        prompt = self.build_failure_analysis_prompt(retry_count)
+        logger.info(f"Failure analysis prompt: {prompt}")
+        if prompt is None:
+            return None
+        # 2. Call the LLM to get the fix
+        response_file_path = os.path.join(
+            self.output_dir, f"response_{self.idx}_fix.pkl" if retry_count == -1
+            else f"response_{self.idx}_retry_{retry_count}_fix.pkl")
+
+        if os.path.exists(response_file_path):
+            response = pickle.load(open(response_file_path, "rb"))
+        else:
+            response = self.llm_client.chat.completions.create(model=self.model_name,
+                                                    messages=[
+                                                        {
+                                                            "role": "user",
+                                                            "content": prompt
+                                                        },
+                                                    ],
+                                                    n=self.num_generate,
+                                                    stream=False,
+                                                    timeout=7200)
+            # Make sure first save result to persistant storage
+            pickle.dump(response, open(response_file_path, "wb"))
+        
+        # 3. Extract the fix from the response
+        fix = response.choices[0].message.content if response.choices and response.choices[0].message else ""
+        logger.info(f"Fix: {fix}")
+        if "<think>" in fix and "</think>" in fix:
+            start = fix.find("</think>") + len("</think>")
+            extracted = fix[start:].strip()
+            fix = extracted
+        
+        # 4. Format the fix prompt
+        most_similar_evaluation_result = self.get_most_similar_evaluation_result(retry_count)
+        if most_similar_evaluation_result is None:
+            return None
+        predicted_llvm_ir = most_similar_evaluation_result.llvm_ir or ""
+        predicted_assembly = most_similar_evaluation_result.assembly or ""
+        analysis = fix
+        prompt = format_llm_fix_prompt(self.initial_prompt, predicted_llvm_ir, predicted_assembly, analysis)
+        logger.info(f"LLM fix prompt: {prompt}")
+        return prompt
+

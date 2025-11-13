@@ -60,17 +60,17 @@ if __name__ == "__main__":
         (
             f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
             # f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-            "/data1/xiachunwei/Projects/validation/Qwen3-32B/sample_loops_Qwen3-32B-n8-assembly-without-comments"
+            "/data1/xiachunwei/Projects/validation/Qwen3-32B/sample_loops_Qwen3-32B-n8-assembly-ghidra-decompile"
         ),
         (
             f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
             # f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-            "/data1/xiachunwei/Projects/validation/Qwen3-32B/sample_loops_Qwen3-32B-n8-assembly-without-comments"
+            "/data1/xiachunwei/Projects/validation/Qwen3-32B/sample_loops_Qwen3-32B-n8-assembly-ghidra-decompile"
         ),
         (
             f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
             # f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-            "/data1/xiachunwei/Projects/validation/Qwen3-32B/sample_only_one_bb_Qwen3-32B-n8-assembly-without-comments"
+            "/data1/xiachunwei/Projects/validation/Qwen3-32B/sample_only_one_bb_Qwen3-32B-n8-assembly-ghidra-decompile"
         ),
     ]
     for dataset_dir_path, response_output_dir in dataset_paires:

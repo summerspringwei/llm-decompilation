@@ -1,7 +1,7 @@
 import re
 import logging
-from typing import List
-
+from typing import List 
+from enum import Enum
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(filename)s: %(lineno)d - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,16 @@ When generating the LLVM IR, please consider the following points:
 - Place the final generated LLVM IR code between ```llvm and ```.
 """
 
+LLM_FIX_PROMPT = """
+You have generated the following LLVM IR: ```llvm\n{predict_llvm_ir}```\n
+The corresponding assembly code compiled from the generated LLVM IR is: ```assembly\n{predict_assembly}```\n
+However your generated LLVM IR is not right.
+I have called a LLM to analyze the reason why the generated LLVM IR is not right.
+Please correct the LLVM IR based on the following analysis:
+{analysis}
+Place the final generated LLVM IR code between ```llvm and ```.
+"""
+
 def format_compile_error_prompt(first_prompt, predict, error_msg):
     prompt = first_prompt + COMPILE_ERROR_TEMPLATE.format(
         predict=predict,
@@ -118,6 +128,14 @@ def format_execution_error_prompt_with_ghidra_decompile_predict(first_prompt, pr
     )
     return prompt
 
+
+def format_llm_fix_prompt(first_prompt, predict_llvm_ir, predict_assembly, analysis):
+    prompt = first_prompt + LLM_FIX_PROMPT.format(
+        predict_llvm_ir=predict_llvm_ir,
+        predict_assembly=predict_assembly,
+        analysis=analysis
+    )
+    return prompt
 
 def extract_llvm_code(markdown_content: str):
     llvm_code_blocks = []
@@ -161,3 +179,18 @@ def extract_llvm_code_from_response(response)->List[str]:
     else:
         logger.warning("No choices found in the response.")
     return predict_llvm_code_list
+
+
+
+class PromptType(Enum):
+    BASIC = "basic"
+    SIMILAR_RECORD = "in-context-learning"
+    GHIDRA_DECOMPILE = "ghidra-decompile"
+    GHIDRA_DECOMPILE_WITH_PREDICT = "ghidra-decompile-with-predict"
+    COMPILE_FIX = "compile-fix"
+    LLM_FIX = "llm-fix"
+    def __str__(self):
+        return self.value
+
+    def __repr__(self):
+        return self.value
