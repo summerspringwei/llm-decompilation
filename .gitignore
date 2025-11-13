@@ -213,3 +213,5 @@ test.py
 *.s
 tmp/
 tmp.*
+*.json
+
