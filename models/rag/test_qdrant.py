@@ -1,7 +1,7 @@
 from tqdm import tqdm
 from datasets import load_from_disk, load_dataset
 from qdrant_client import QdrantClient
-from models.rag.exebench_qdrant_base import build_qdrant_database, search_similar_records, load_embedding_model, find_similar_records_in_exebench_synth_rich_io
+from models.rag.exebench_qdrant_base import build_qdrant_database, search_similar_records, find_similar_records_in_exebench_synth_rich_io
 from models.rag.embedding_client import RemoteEmbeddingModel
 from utils.preprocessing_assembly import preprocessing_assembly 
 from analysis.analyze_exebench_dataset import prepare_dataset
@@ -13,35 +13,22 @@ logging.basicConfig(level=logging.INFO)
 def test_build_database_and_search():
     # Dataset path
     dataset_path = "/data1/xiachunwei/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff/train_synth_rich_io_filtered_0_llvm_extract_func_ir_assembly_O2_llvm_diff"
-    collection_name = "assembly_code"
+    collection_name = "assembly_code_hermessim"
     # Build database
-    client, collection_name = build_qdrant_database(dataset_path, collection_name)
-    # client = QdrantClient("localhost", port=6333)
-    # Load a sample record for testing
-    dataset = load_from_disk(dataset_path)
-    sample_record = dataset[1000]  # Use first record as query
-    
-    print("\n" + "="*50)
-    print("SAMPLE QUERY RECORD:")
-    print(f"Path: {sample_record.get('path', 'N/A')}")
-    print(f"Function: {sample_record.get('fname', 'N/A')}")
-    print(f"Assembly code preview: {sample_record['asm']['code'][-1][:200]}...")
-    
-    # Search for similar records
-    print("\n" + "="*50)
-    print("SEARCHING FOR SIMILAR RECORDS:")
-    search_results = search_similar_records(client, collection_name, sample_record, top_k=3)
-    print(sample_record["asm"]["code"][-1])
-    for i, result in enumerate(search_results, 1):
-        print(f"\n--- Result {i} (Score: {result.score:.4f}) ---")
-        print(f"ID: {result.id}")
-        print(f"Path: {result.payload.get('path', 'N/A')}")
-        record = dataset[result.id]
-        print((record["asm"]["code"][-1]))
-        # print(f"Function: {result.payload.get('fname', 'N/A')}")
-        # print(f"Target: {result.payload.get('target', 'N/A')}")
-        # print(f"Assembly code preview: {result.payload.get('assembly_code', 'N/A')[:200]}...")
-
+    client = QdrantClient("localhost", port=6333)
+    dataset = load_from_disk(dataset_path).select(range(16))
+    client, collection_name = build_qdrant_database(dataset, client, collection_name, batch_size = 64, pre_process_asm_code=True, vector_size=384)
+    client.get_collections()
+    client.close()
+    # # Search for similar records
+    # query_record = dataset[10]
+    # search_results = search_similar_records(client, collection_name, query_record, top_k=3)
+    # for i, result in enumerate(search_results, 1):
+    #     print(f"\n--- Result {i} (Score: {result.score:.4f}) ---")
+    #     print(f"ID: {result.id}")
+    #     print(f"Path: {result.payload.get('path', 'N/A')}")
+    #     record = dataset[result.id]
+    #     print(record["asm"]["code"][-1])
 
 def test_query():
     client = QdrantClient("localhost", port=6333)
@@ -159,8 +146,9 @@ def find_similar_for_motivation_dataset():
 
 
 if __name__ == "__main__":
+    test_build_database_and_search()
     # create_exebench_test_validation_dataset()
     # verify_self_similarity()
     # verify_hard_case()
     # find_same()
-    find_similar_for_motivation_dataset()
+    # find_similar_for_motivation_dataset()

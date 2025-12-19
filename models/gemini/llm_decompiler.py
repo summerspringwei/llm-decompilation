@@ -2,20 +2,21 @@ import os
 import pickle
 import logging
 import torch
+import requests
+from tqdm import tqdm
+from typing import List
 import numpy as np
 import faulthandler, signal
-from enum import Enum
 from concurrent.futures import ThreadPoolExecutor
 
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI
-from typing import Union, Literal, List
 
 from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
 from utils.preprocessing_assembly import preprocessing_assembly
 from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
 from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt, format_execution_error_prompt_with_ghidra_decompile_predict, format_llm_fix_prompt
-from models.rag.exebench_qdrant_base import find_similar_records_in_exebench_synth_rich_io
+from models.rag.exebench_qdrant_base import ExebenchQdrantSearch
 from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT, GHIDRA_DECOMPILE_TEMPLATE, PromptType
 from models.ghidra_decompile.ghidra_decompile_exebench import ghdria_decompile_record
 
@@ -42,7 +43,6 @@ class ResponseValidation:
         self.predict_evaluation_results_list = predict_evaluation_results_list
         self.target_evaluation_result = target_evaluation_result
         
-
     def get_num_execution_success(self) -> int:
         return sum(1 for result in self.predict_evaluation_results_list if result.execution_success)
 
@@ -63,8 +63,6 @@ class ResponseValidation:
                 break
 
 
-
-
 class LLMDecompileRecord:
 
     def __init__(self,
@@ -75,10 +73,10 @@ class LLMDecompileRecord:
                  num_generate: int,
                  output_dir: str,
                  prompt_type: PromptType,
+                 collection_name_with_idx: str,
                  remove_comments: bool = True,
                  num_retry: int = 10,
-                 embedding_client=None,
-                 embedding_model_name="Qwen3-Embedding-8B",
+                 embedding_url=None,
                  qdrant_client=None,
                  dataset_for_qdrant_dir=None,
                  fix_prompt_type: PromptType = PromptType.COMPILE_FIX
@@ -92,7 +90,7 @@ class LLMDecompileRecord:
         self.prompt_type = prompt_type
         self.fix_prompt_type = fix_prompt_type
         self.remove_comments = remove_comments
-        self.embedding_client = embedding_client
+        self.embedding_url = embedding_url
         self.qdrant_client = qdrant_client
         self.dataset_for_qdrant_dir = dataset_for_qdrant_dir
         self.num_retry = num_retry
@@ -100,9 +98,8 @@ class LLMDecompileRecord:
         self.similar_record = None
         self.score = None
         self.initial_prompt = None
-        self.embedding_model_name = embedding_model_name
-        
-        # self.initial_prompt = self.get_initial_prompt()
+        self.exebench_qdrant_search = ExebenchQdrantSearch(dataset_for_qdrant_dir, qdrant_client, embedding_url, collection_name_with_idx)
+
 
     def prepare_basic_prompt(self):
         asm_code = self.record["asm"]["code"][-1]
@@ -113,9 +110,7 @@ class LLMDecompileRecord:
 
     # TODO(Chunwei) Need to use api to call embedding model to find the similar record
     def prepare_prompt_from_similar_record(self):
-        self.similar_record, self.score = find_similar_records_in_exebench_synth_rich_io(
-            self.qdrant_client, self.embedding_client, self.record,
-            self.dataset_for_qdrant_dir)
+        self.similar_record, self.score = self.exebench_qdrant_search.find_similar_records_in_exebench_synth_rich_io(self.record)
         asm_code = self.record["asm"]["code"][-1]
         asm_code = preprocessing_assembly(asm_code,
                                           remove_comments=self.remove_comments)
@@ -148,11 +143,12 @@ class LLMDecompileRecord:
 
     def get_initial_prompt(self):
         if self.prompt_type == PromptType.SIMILAR_RECORD:
-            return self.prepare_prompt_from_similar_record()
+            self.initial_prompt = self.prepare_prompt_from_similar_record()
         elif self.prompt_type == PromptType.GHIDRA_DECOMPILE:
-            return self.prepare_prompt_from_ghidra_decompile()
+            self.initial_prompt = self.prepare_prompt_from_ghidra_decompile()
         else:
-            return self.prepare_prompt()
+            self.initial_prompt = self.prepare_prompt()
+        return self.initial_prompt
 
     def decompile_and_evaluate(self, prompt,
                                retry_count: int) -> ResponseValidation:
@@ -251,40 +247,48 @@ class LLMDecompileRecord:
 
 
     def get_embedding(self, texts: list[str]) -> list[list[float]]:
-        response = self.embedding_client.embeddings.create(input = texts, model=self.embedding_model_name, encoding_format='float', timeout=120)
-        return [embedding.embedding for embedding in response.data]
+        response = requests.post(self.embedding_url, json=texts)
+        response.raise_for_status()
+        results = response.json()
+        embeddings = results['embeddings']
+        return embeddings
 
 
     def get_most_similar_predict(self, retry_count: int) -> EvaluationResult:
         predict_evaluation_results_list = self.retry_response_validation[retry_count - 1].predict_evaluation_results_list
         target_assembly = self.record["asm"]["code"][-1]
         compilable_assembly_list = [(idx, r.assembly) for idx, r in enumerate(predict_evaluation_results_list) if r.compile_success]
+        
         if len(compilable_assembly_list) == 0:
             return predict_evaluation_results_list[0]
         elif len(compilable_assembly_list) == 1:
             return predict_evaluation_results_list[compilable_assembly_list[0][0]]
 
         try:
-            query_vector = self.get_embedding([target_assembly])
-            compilable_assembly_vectors = self.get_embedding([r[1] for r in compilable_assembly_list])
+            # query_vector = self.get_embedding([target_assembly])
+            # compilable_assembly_vectors = self.get_embedding([r[1] for r in compilable_assembly_list])
+            all_assembly_texts = [target_assembly] + [r[1] for r in compilable_assembly_list]
+            all_assembly_vectors = self.get_embedding(all_assembly_texts)
+            query_vector = all_assembly_vectors[0]
+            compilable_assembly_vectors = all_assembly_vectors[1:]
+
             query_tensor = torch.tensor(query_vector, dtype=torch.float32)
             compilable_tensors = torch.tensor(np.array(compilable_assembly_vectors), dtype=torch.float32)
-
             # Calculate cosine similarity between the query vector and all compilable assembly vectors
             # Unsqueeze query_tensor to (1, embedding_dim) to enable batch comparison with F.cosine_similarity
-            similarities = torch.nn.functional.cosine_similarity(query_tensor.unsqueeze(0), compilable_tensors)
-
+            similarities = torch.nn.functional.cosine_similarity(query_tensor, compilable_tensors)
             # Find the index of the maximum similarity
-            most_similar_idx = torch.argmax(similarities).item()
+            most_similar_idx_tensor = torch.argmax(similarities).item()
+            logger.info(f"Most similar index: {most_similar_idx} out of {len(compilable_assembly_list)}")
         except Exception as e:
             logger.error(f"Error in getting most similar predict: {e}")
             most_similar_idx = compilable_assembly_list[0][0]
 
-        if most_similar_idx >= len(compilable_assembly_list):
+        if most_similar_idx_tensor >= len(compilable_assembly_list):
             logger.warning(f"Most similar index {most_similar_idx} is out of range {len(compilable_assembly_list)}")
             most_similar_idx = compilable_assembly_list[0][0]
         else:
-            most_similar_idx = compilable_assembly_list[most_similar_idx][0]
+            most_similar_idx = compilable_assembly_list[most_similar_idx_tensor][0]
         
         return predict_evaluation_results_list[most_similar_idx]
 
@@ -330,15 +334,17 @@ class LLMDecompileRecord:
         else:
             if self.retry_response_validation[retry_count - 1].get_num_compile_success() == 1:
                 most_similar_evaluation_result = self.retry_response_validation[retry_count - 1].get_first_compile_success_evaluation_result()
+                logger.info("Only one choice that is compile success")
             else:
                 most_similar_evaluation_result = self.get_most_similar_predict(retry_count)
-            predict = most_similar_evaluation_result.llvm_ir
+                logger.info(f"Use most similar predict: {most_similar_evaluation_result}")
+            predict_llvm_ir = most_similar_evaluation_result.llvm_ir
             predict_assembly = most_similar_evaluation_result.assembly
             predict_assembly = preprocessing_assembly(
                 predict_assembly, remove_comments=self.remove_comments)
-            if self.prompt_type == PromptType.GHIDRA_DECOMPILE:
+            if self.prompt_type == PromptType.GHIDRA_DECOMPILE or self.prompt_type == PromptType.SIMILAR_RECORD:
                 prompt = format_execution_error_prompt(self.initial_prompt,
-                                                    predict,
+                                                    predict_llvm_ir,
                                                     predict_assembly)
             elif self.prompt_type == PromptType.GHIDRA_DECOMPILE_WITH_PREDICT:
                 ghidra_decompiler = ghdria_decompile_record((self.idx, self.record))
@@ -359,7 +365,6 @@ class LLMDecompileRecord:
         if not os.path.exists(sample_dir):
             os.makedirs(sample_dir, exist_ok=True)
         while retry_count < self.num_retry and not fix_success:
-            
             if self.retry_response_validation[retry_count - 1].get_num_execution_success() > 0:
                 self.retry_response_validation[retry_count - 1].dump_correct_llvm_ir(sample_dir)
                 logger.info(f"Correct LLVM IR saved to {os.path.join(sample_dir, f'correct_llvm_ir.ll')} after {retry_count} retries")
@@ -547,3 +552,8 @@ class LLMDecompileRecord:
         logger.info(f"LLM fix prompt: {prompt}")
         return prompt
 
+    def finalize(self):
+        # Remove unpickleable objects before returning for multiprocessing
+        self.llm_client = None
+        self.exebench_qdrant_search = None
+        self.qdrant_client = None

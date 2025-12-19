@@ -2,7 +2,8 @@ import os
 import pickle
 import argparse
 from multiprocessing import Pool
-import faulthandler, signal
+import faulthandler
+import signal
 
 from openai import OpenAI
 from datasets import load_from_disk, Dataset
@@ -10,10 +11,10 @@ from qdrant_client import QdrantClient
 
 from utils.mylogger import logger
 from models.gemini.llm_decompiler import LLMDecompileRecord, PromptType
-from models.rag.embedding_client import RemoteEmbeddingModel
 
 HOME_DIR = os.path.expanduser("~")
 # Service config: Key: model name, Value: (client, model_name)
+
 
 def parse_args():
     # Parse command line arguments
@@ -44,28 +45,39 @@ def parse_args():
                         default="6333",
                         help='Port to use for Qdrant')
 
-    parser.add_argument('--embedding_model',
+    parser.add_argument('--embedding_url',
                         type=str,
-                        default="http://localhost:8001/v1",
+                        default="http://localhost:8123/embed/batch",
                         help='Embedding model to use for RAG')
 
     parser.add_argument('--prompt-type',
                         type=str,
-                        default="ghidra-decompile",
+                        default="in-context-learning",
                         help='Prompt type to use for decompilation')
+
+    parser.add_argument('--collection_name_with_idx',
+                        type=str,
+                        default="train_synth_rich_io_filtered_{idx}_preprocessed_hermessim",
+                        help='Collection name with index to use for RAG')
+    parser.add_argument('--num_generate',
+                        type=int,
+                        default=8,
+                        help='Number of generate to use for decompilation')
     args = parser.parse_args()
     return args
+
 
 args = parse_args()
 model = args.model
 host = args.host
 port = args.port
-# embedding_model = RemoteEmbeddingModel(args.embedding_model)
 
-embedding_client = OpenAI(api_key="abcd", base_url=args.embedding_model)
+embedding_url = args.embedding_url
 prompt_type = PromptType(args.prompt_type)
 qdrant_client = QdrantClient(host=args.qdrant_host, port=args.qdrant_port)
 dataset_for_qdrant_dir = f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff"
+collection_name_with_idx = args.collection_name_with_idx
+num_generate = args.num_generate
 
 SERVICE_CONFIG = {
     "Qwen3-32B": (OpenAI(
@@ -76,11 +88,12 @@ SERVICE_CONFIG = {
         api_key="token-llm4decompilation-abc123",
         base_url=f"http://{host}:{port}/v1",
     ), "Qwen3-30B-A3B"),
-    "Huoshan-DeepSeek-R1": (OpenAI(api_key=os.environ.get("ARK_STREAM_API_KEY"),
+    "Huoshan-DeepSeek-R1":
+    (OpenAI(api_key=os.environ.get("ARK_STREAM_API_KEY"),
             base_url="https://ark.cn-beijing.volces.com/api/v3",
             timeout=1800), "ep-20250317013717-m9ksl"),
-    "OpenAI-GPT-4.1": (OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), ),
-                       "gpt-4.1")
+    "OpenAI-GPT-4.1":
+    (OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), ), "gpt-4.1")
 }
 
 # Set client and model here
@@ -88,15 +101,33 @@ global client
 client, model_name = SERVICE_CONFIG[model]
 
 
-def decompile_func(record, idx, output_dir, model_name: str, prompt_type: PromptType, remove_comments: bool = True, num_generate: int = 8):
+def decompile_func(record,
+                   idx,
+                   output_dir,
+                   model_name: str,
+                   prompt_type: PromptType,
+                   remove_comments: bool = True,
+                   num_generate: int = 8,
+                   dataset_for_qdrant_dir: str = None,
+                   collection_name_with_idx: str = "collection_{idx}_preprocessed_hermessim"):
     faulthandler.register(signal.SIGUSR1)
-    llm_decompile_record = LLMDecompileRecord(record, idx, client, model_name, num_generate, output_dir, prompt_type, remove_comments, embedding_client=embedding_client, embedding_model_name="Qwen3-Embedding-8B")
+    llm_decompile_record = LLMDecompileRecord(record,
+                                              idx,
+                                              client,
+                                              model_name,
+                                              num_generate,
+                                              output_dir,
+                                              prompt_type,
+                                              collection_name_with_idx,
+                                              remove_comments,
+                                              embedding_url=embedding_url,
+                                              qdrant_client=qdrant_client,
+                                              dataset_for_qdrant_dir=dataset_for_qdrant_dir)
     llm_decompile_record.get_initial_prompt()
-    llm_decompile_record.decompile_and_evaluate(llm_decompile_record.initial_prompt, -1)
+    llm_decompile_record.decompile_and_evaluate(
+        llm_decompile_record.initial_prompt, -1)
     llm_decompile_record.correct_one()
-    # Remove unpickleable objects before returning for multiprocessing
-    llm_decompile_record.llm_client = None
-    llm_decompile_record.embedding_client = None
+    llm_decompile_record.finalize()
     return llm_decompile_record
 
 
@@ -105,39 +136,46 @@ def LLM_predict_openai_api(dataset: list,
                            prompt_type: PromptType,
                            num_processes: int = 8,
                            remove_comments: bool = True,
-                           num_generate: int = 8):
+                           num_generate: int = 8,
+                           dataset_for_qdrant_dir: str = None):
     if not os.path.exists(output_dir):
         raise ValueError(f"Output directory {output_dir} does not exist.")
     # We need to save the similar records for in-context learning
     if not os.path.exists(os.path.join(output_dir, "similar_records")):
         os.makedirs(os.path.join(output_dir, "similar_records"), exist_ok=True)
-    args = [(record, idx, output_dir, model_name, prompt_type, remove_comments, num_generate) for idx, record in enumerate(dataset)]
+    args = [(record, idx, output_dir, model_name, prompt_type, remove_comments,
+             num_generate, dataset_for_qdrant_dir, collection_name_with_idx) for idx, record in enumerate(dataset)]
     with Pool(processes=num_processes) as pool:
         results = pool.starmap(decompile_func, args)
+    # decompile_func(*args[0])
     pickle.dump(results, open(os.path.join(output_dir, "results.pkl"), "wb"))
-
-
     # Show the summary of the results
     predict_compile_success_count = 0
     predict_execution_success_count = 0
     target_compile_success_count = 0
     target_execution_success_count = 0
     for result in results:
-        predict_compile_success, predict_execution_success = result.predict_has_compile_and_execution_sucess()
+        predict_compile_success, predict_execution_success = result.predict_has_compile_and_execution_sucess(
+        )
         if predict_compile_success:
             predict_compile_success_count += 1
         if predict_execution_success:
             predict_execution_success_count += 1
-        target_compile_success, target_execution_success = result.target_has_compile_and_execution_sucess()
+        target_compile_success, target_execution_success = result.target_has_compile_and_execution_sucess(
+        )
         if target_compile_success:
             target_compile_success_count += 1
         if target_execution_success:
             target_execution_success_count += 1
-    print(f"Number of predict_compile_success: {predict_compile_success_count}")
-    print(f"Number of predict_execution_success: {predict_execution_success_count}")
+    print(
+        f"Number of predict_compile_success: {predict_compile_success_count}")
+    print(
+        f"Number of predict_execution_success: {predict_execution_success_count}"
+    )
     print(f"Number of target_compile_success: {target_compile_success_count}")
-    print(f"Number of target_execution_success: {target_execution_success_count}")
-
+    print(
+        f"Number of target_execution_success: {target_execution_success_count}"
+    )
 
 
 def main(dataset_dir_path,
@@ -146,35 +184,60 @@ def main(dataset_dir_path,
          num_generate: int = 8,
          remove_comments: bool = True,
          prompt_type: PromptType = PromptType.GHIDRA_DECOMPILE,
-         num_retry: int = 10):
+         num_retry: int = 10,
+         dataset_for_qdrant_dir: str = None):
     dataset = load_from_disk(dataset_dir_path)
-    if not os.path.exists(response_output_dir):
-        os.makedirs(response_output_dir, exist_ok=True)
-    LLM_predict_openai_api(dataset, output_dir, prompt_type=prompt_type, num_processes=num_processes, remove_comments=remove_comments, num_generate=num_generate)
-    # TODO(Chunwei) TODO: Add fix 
-
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    LLM_predict_openai_api(dataset,
+                           output_dir,
+                           prompt_type=prompt_type,
+                           num_processes=num_processes,
+                           remove_comments=remove_comments,
+                           num_generate=num_generate,
+                           dataset_for_qdrant_dir=dataset_for_qdrant_dir)
+    # TODO(Chunwei) TODO: Add fix
 
 
 if __name__ == "__main__":
     remove_comments = True
     with_comments = "without" if remove_comments else "with"
-    prompt_type = PromptType.GHIDRA_DECOMPILE
+    prompt_type = PromptType.SIMILAR_RECORD
+    # dataset_paires = [
+    # (
+    #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
+    #     f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
+    # ),
+    # (
+    #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164",
+    #     f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
+    # ),
+    # (
+    #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164",
+    #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
+    # ),
+    # ]
+
     dataset_paires = [
-        # (
-        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
-        #     f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-        # ),
+        # (f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
+        #  f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
+        #  ),
         (
-            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164", 
-            f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
+            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164",
+            f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
         ),
         # (
-        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164", 
-        #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
+        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164",
+        #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
         # ),
     ]
     for dataset_dir_path, response_output_dir in dataset_paires:
         if not os.path.exists(response_output_dir):
             os.makedirs(response_output_dir, exist_ok=True)
-        main(dataset_dir_path, response_output_dir, num_processes=32, remove_comments=remove_comments, prompt_type=prompt_type, num_generate=8)
-        
+        main(dataset_dir_path,
+             response_output_dir,
+             num_processes=32,
+             remove_comments=remove_comments,
+             prompt_type=prompt_type,
+             num_generate=num_generate,
+             dataset_for_qdrant_dir=f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff")

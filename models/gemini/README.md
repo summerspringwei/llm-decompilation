@@ -34,7 +34,7 @@ export OPENAI_API_KEY="your_openai_api_key"         # For OpenAI-GPT-4.1
 For local models (Qwen3-32B, Qwen3-30B-A3B), ensure your model server is running:
 
 ```bash
-export CUDA_VISIBLE_DEVICES=0,1 && vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-32B --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --served-model-name Qwen3-32B
+export CUDA_VISIBLE_DEVICES=6,7 && vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-32B --port 9002 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --served-model-name Qwen3-32B
 ```
 
 

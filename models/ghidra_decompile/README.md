@@ -25,3 +25,7 @@ Here is one example:
 ```bash
 $GHIDRA_HOME/support/analyzeHeadless /tmp/myghidra/ sample155 -import /data1/xiachunwei/Projects/validation/Qwen3-32B/sample_loops_Qwen3-32B-n8-assembly-without-comments-ghidra-decompile/sample_155_retry_5/target.o -overwrite -postscript /data1/xiachunwei/Projects/llm-decompilation/models/ghidra_decompile/ghidra_extract_bb.py ointerest 
 ```
+
+For the `ghidra_extract_bb.py`, currently there is one issue:
+
+📌 We should filter out the basic blocks that has only one jump instruction, merge this basic block with the previous one.

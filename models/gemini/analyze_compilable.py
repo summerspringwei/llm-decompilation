@@ -2,7 +2,6 @@ import os
 import concurrent.futures
 import pickle
 from typing import List
-
 from openai import OpenAI
 from utils.openai_helper import PromptType
 from models.gemini.llm_decompiler import LLMDecompileRecord
