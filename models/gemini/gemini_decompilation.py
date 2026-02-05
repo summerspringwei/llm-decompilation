@@ -20,9 +20,15 @@ def parse_args():
     # Parse command line arguments
     parser = argparse.ArgumentParser(
         description='Run decompilation with specified model')
+    parser.add_argument("--dataset_name",
+                        type=str,
+                        default="sampled_dataset_with_loops_and_only_one_bb_164",
+                        help='Dataset name to use for decompilation')
+    
     parser.add_argument('--model',
                         type=str,
-                        default="Qwen3-32B",
+                        # default="Qwen3-32B",
+                        default="gpt-oss-20b",
                         help='Model to use for decompilation')
 
     parser.add_argument('--host',
@@ -59,10 +65,17 @@ def parse_args():
                         type=str,
                         default="train_synth_rich_io_filtered_{idx}_preprocessed_hermessim",
                         help='Collection name with index to use for RAG')
+    
     parser.add_argument('--num_generate',
                         type=int,
                         default=8,
                         help='Number of generate to use for decompilation')
+
+    parser.add_argument('--num_processes',
+                        type=int,
+                        default=1,
+                        help='Number of processes to use for decompilation')
+
     args = parser.parse_args()
     return args
 
@@ -78,12 +91,21 @@ qdrant_client = QdrantClient(host=args.qdrant_host, port=args.qdrant_port)
 dataset_for_qdrant_dir = f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff"
 collection_name_with_idx = args.collection_name_with_idx
 num_generate = args.num_generate
+num_processes = args.num_processes
 
 SERVICE_CONFIG = {
     "Qwen3-32B": (OpenAI(
         api_key="token-llm4decompilation-abc123",
         base_url=f"http://{host}:{port}/v1",
     ), "Qwen3-32B"),
+    "gpt-oss-20b": (OpenAI(
+        api_key="token-llm4decompilation-abc123",
+        base_url=f"http://{host}:{port}/v1",
+    ), "gpt-oss-20b"),
+    "gpt-oss-120b": (OpenAI(
+        api_key="token-llm4decompilation-abc123",
+        base_url=f"http://{host}:{port}/v1",
+    ), "gpt-oss-120b"),
     "Qwen3-30B-A3B": (OpenAI(
         api_key="token-llm4decompilation-abc123",
         base_url=f"http://{host}:{port}/v1",
@@ -218,26 +240,28 @@ if __name__ == "__main__":
     # ),
     # ]
 
-    dataset_paires = [
-        # (f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
-        #  f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
-        #  ),
-        (
+    dataset_paires = {
+        "sampled_dataset_with_loops_and_only_one_bb_164": (f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
+         f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
+         ),
+        "sampled_dataset_without_loops_164": (
             f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164",
             f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
         ),
-        # (
-        #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164",
-        #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
-        # ),
-    ]
-    for dataset_dir_path, response_output_dir in dataset_paires:
-        if not os.path.exists(response_output_dir):
-            os.makedirs(response_output_dir, exist_ok=True)
-        main(dataset_dir_path,
-             response_output_dir,
-             num_processes=32,
-             remove_comments=remove_comments,
-             prompt_type=prompt_type,
-             num_generate=num_generate,
-             dataset_for_qdrant_dir=f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff")
+        "sampled_dataset_with_loops_164": (
+            f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164",
+            f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
+        ),
+    }
+    if args.dataset_name not in dataset_paires:
+        raise ValueError(f"Dataset name {args.dataset_name} not found in {dataset_paires.keys()}")
+    dataset_dir_path, response_output_dir = dataset_paires[args.dataset_name]
+    if not os.path.exists(response_output_dir):
+        os.makedirs(response_output_dir, exist_ok=True)
+    main(dataset_dir_path,
+            response_output_dir,
+            num_processes=num_processes,
+            remove_comments=remove_comments,
+            prompt_type=prompt_type,
+            num_generate=num_generate,
+            dataset_for_qdrant_dir=f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff")

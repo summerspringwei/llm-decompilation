@@ -264,6 +264,7 @@ class LLMDecompileRecord:
         elif len(compilable_assembly_list) == 1:
             return predict_evaluation_results_list[compilable_assembly_list[0][0]]
 
+        most_similar_idx_tensor = 0
         try:
             # query_vector = self.get_embedding([target_assembly])
             # compilable_assembly_vectors = self.get_embedding([r[1] for r in compilable_assembly_list])
@@ -279,16 +280,20 @@ class LLMDecompileRecord:
             similarities = torch.nn.functional.cosine_similarity(query_tensor, compilable_tensors)
             # Find the index of the maximum similarity
             most_similar_idx_tensor = torch.argmax(similarities).item()
-            logger.info(f"Most similar index: {most_similar_idx} out of {len(compilable_assembly_list)}")
+            logger.info(f"Most similar index: {most_similar_idx_tensor} out of {len(compilable_assembly_list)}")
         except Exception as e:
             logger.error(f"Error in getting most similar predict: {e}")
-            most_similar_idx = compilable_assembly_list[0][0]
+            # most_similar_idx = compilable_assembly_list[0][0]
+            
 
         if most_similar_idx_tensor >= len(compilable_assembly_list):
-            logger.warning(f"Most similar index {most_similar_idx} is out of range {len(compilable_assembly_list)}")
+            logger.warning(f"Most similar index {most_similar_idx_tensor} is out of range {len(compilable_assembly_list)}")
             most_similar_idx = compilable_assembly_list[0][0]
         else:
             most_similar_idx = compilable_assembly_list[most_similar_idx_tensor][0]
+        
+        compilable_assembly_idx_list = [r[0] for r in compilable_assembly_list]
+        logger.info(f"Choose the most similar index: {most_similar_idx} from {compilable_assembly_idx_list}")
         
         return predict_evaluation_results_list[most_similar_idx]
 

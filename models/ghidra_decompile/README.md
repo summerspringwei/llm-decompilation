@@ -29,3 +29,16 @@ $GHIDRA_HOME/support/analyzeHeadless /tmp/myghidra/ sample155 -import /data1/xia
 For the `ghidra_extract_bb.py`, currently there is one issue:
 
 📌 We should filter out the basic blocks that has only one jump instruction, merge this basic block with the previous one.
+
+## Lift Exebench assembly to P-code
+
+This script compiles each sample's assembly to an object file, runs Ghidra in
+headless mode, and dumps high-level P-code to `pcode.txt` under the output directory.
+
+Usage:
+```bash
+python3 models/ghidra_decompile/ghidra_pcode_exebench.py \
+  --dataset_path /data1/xiachunwei/Datasets/filtered_exebench/sampled_dataset_with_loops_164 \
+  --output_dir ~/Projects/validation/ghidra_pcode/sampled_dataset_with_loops_164 \
+  --num_processes 16
+```

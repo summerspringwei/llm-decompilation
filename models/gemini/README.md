@@ -34,10 +34,24 @@ export OPENAI_API_KEY="your_openai_api_key"         # For OpenAI-GPT-4.1
 For local models (Qwen3-32B, Qwen3-30B-A3B), ensure your model server is running:
 
 ```bash
-export CUDA_VISIBLE_DEVICES=6,7 && vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-32B --port 9002 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --served-model-name Qwen3-32B
+export CUDA_VISIBLE_DEVICES=7 && vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-32B --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --served-model-name Qwen3-32B
 ```
 
+```bash
+export CUDA_VISIBLE_DEVICES=7 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-20b --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 1 --served-model-name gpt-oss-20b
+```
 
+```bash
+export CUDA_VISIBLE_DEVICES=4,5 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-120b --port 9002 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2  --async-scheduling --served-model-name gpt-oss-120b 
+```
+```bash
+python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 64 --port 9002 --model gpt-oss-120b 2>&1 | tee gpt-oss-120b-tmp_sampled_dataset_with_loops_and_only_one_bb_164
+```
+```bash
+export CUDA_VISIBLE_DEVICES=6,7 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-120b --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --async-scheduling --served-model-name gpt-oss-120b
+
+python3 models/gemini/gemini_decompilation.py --port 9001 --embedding_url http://localhost:8125/embed/batch --dataset_name sampled_dataset_with_loops_164 --num_processes 64 --model gpt-oss-120b 2>&1 | tee tmp_gpt-oss-120b-sampled_dataset_with_loops_164.log
+```
 ### 4. RAG service Setup
 
 For RAG functionality, ensure Qdrant is running:
