@@ -35,6 +35,7 @@ For local models (Qwen3-32B, Qwen3-30B-A3B), ensure your model server is running
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7 && vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-32B --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --served-model-name Qwen3-32B
+ python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 32 --port 9002 --model gpt-oss-20b --use_pcode > tmp_gpt-oss-20b-sampled_dataset_with_loops_and_only_one_bb_164.log 
 ```
 
 ```bash

@@ -75,6 +75,9 @@ def parse_args():
                         type=int,
                         default=1,
                         help='Number of processes to use for decompilation')
+    parser.add_argument('--use_pcode',
+                        action='store_true',
+                        help='Use Ghidra P-code as the input instead of assembly')
 
     args = parser.parse_args()
     return args
@@ -84,6 +87,7 @@ args = parse_args()
 model = args.model
 host = args.host
 port = args.port
+use_pcode = args.use_pcode
 
 embedding_url = args.embedding_url
 prompt_type = PromptType(args.prompt_type)
@@ -129,6 +133,7 @@ def decompile_func(record,
                    model_name: str,
                    prompt_type: PromptType,
                    remove_comments: bool = True,
+                   use_pcode: bool = False,
                    num_generate: int = 8,
                    dataset_for_qdrant_dir: str = None,
                    collection_name_with_idx: str = "collection_{idx}_preprocessed_hermessim"):
@@ -142,6 +147,7 @@ def decompile_func(record,
                                               prompt_type,
                                               collection_name_with_idx,
                                               remove_comments,
+                                              use_pcode,
                                               embedding_url=embedding_url,
                                               qdrant_client=qdrant_client,
                                               dataset_for_qdrant_dir=dataset_for_qdrant_dir)
@@ -158,6 +164,7 @@ def LLM_predict_openai_api(dataset: list,
                            prompt_type: PromptType,
                            num_processes: int = 8,
                            remove_comments: bool = True,
+                           use_pcode: bool = False,
                            num_generate: int = 8,
                            dataset_for_qdrant_dir: str = None):
     if not os.path.exists(output_dir):
@@ -166,6 +173,7 @@ def LLM_predict_openai_api(dataset: list,
     if not os.path.exists(os.path.join(output_dir, "similar_records")):
         os.makedirs(os.path.join(output_dir, "similar_records"), exist_ok=True)
     args = [(record, idx, output_dir, model_name, prompt_type, remove_comments,
+             use_pcode,
              num_generate, dataset_for_qdrant_dir, collection_name_with_idx) for idx, record in enumerate(dataset)]
     with Pool(processes=num_processes) as pool:
         results = pool.starmap(decompile_func, args)
@@ -207,7 +215,8 @@ def main(dataset_dir_path,
          remove_comments: bool = True,
          prompt_type: PromptType = PromptType.GHIDRA_DECOMPILE,
          num_retry: int = 10,
-         dataset_for_qdrant_dir: str = None):
+         dataset_for_qdrant_dir: str = None,
+         use_pcode: bool = False):
     dataset = load_from_disk(dataset_dir_path)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -216,6 +225,7 @@ def main(dataset_dir_path,
                            prompt_type=prompt_type,
                            num_processes=num_processes,
                            remove_comments=remove_comments,
+                           use_pcode=use_pcode,
                            num_generate=num_generate,
                            dataset_for_qdrant_dir=dataset_for_qdrant_dir)
     # TODO(Chunwei) TODO: Add fix
@@ -225,32 +235,18 @@ if __name__ == "__main__":
     remove_comments = True
     with_comments = "without" if remove_comments else "with"
     prompt_type = PromptType.SIMILAR_RECORD
-    # dataset_paires = [
-    # (
-    #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
-    #     f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-    # ),
-    # (
-    #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164",
-    #     f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-    # ),
-    # (
-    #     f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164",
-    #     f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n8-assembly-{with_comments}-comments-{prompt_type}"
-    # ),
-    # ]
 
     dataset_paires = {
         "sampled_dataset_with_loops_and_only_one_bb_164": (f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_and_only_one_bb_164",
-         f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
+         f"{HOME_DIR}/Projects/validation/{model}/sample_only_one_bb_{model}-n{num_generate}-{'ghidra-pcode' if use_pcode else 'assembly'}-{with_comments}-comments-{prompt_type}-similar-hermes"
          ),
         "sampled_dataset_without_loops_164": (
             f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_without_loops_164",
-            f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
+            f"{HOME_DIR}/Projects/validation/{model}/sample_without_loops_{model}-n{num_generate}-{'ghidra-pcode' if use_pcode else 'assembly'}-{with_comments}-comments-{prompt_type}-similar-hermes"
         ),
         "sampled_dataset_with_loops_164": (
             f"{HOME_DIR}/Datasets/filtered_exebench/sampled_dataset_with_loops_164",
-            f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n{num_generate}-assembly-{with_comments}-comments-{prompt_type}-similar-hermes"
+            f"{HOME_DIR}/Projects/validation/{model}/sample_loops_{model}-n{num_generate}-{'ghidra-pcode' if use_pcode else 'assembly'}-{with_comments}-comments-{prompt_type}-similar-hermes"
         ),
     }
     if args.dataset_name not in dataset_paires:
@@ -263,5 +259,6 @@ if __name__ == "__main__":
             num_processes=num_processes,
             remove_comments=remove_comments,
             prompt_type=prompt_type,
+            use_pcode=use_pcode,
             num_generate=num_generate,
             dataset_for_qdrant_dir=f"{HOME_DIR}/Datasets/filtered_exebench/train_synth_rich_io_filtered_llvm_extract_func_ir_assembly_O2_llvm_diff")

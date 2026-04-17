@@ -16,7 +16,7 @@ from utils.preprocessing_assembly import preprocessing_assembly
 from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
 from utils.openai_helper import extrac_llvm_code_from_response_text, format_compile_error_prompt, format_execution_error_prompt
 from models.rag.exebench_qdrant_base import load_embedding_model, find_similar_records_in_exebench_synth_rich_io
-from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT
+from utils.prompt_templates import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT
 from models.rag.embedding_client import RemoteEmbeddingModel
 
 logging.basicConfig(

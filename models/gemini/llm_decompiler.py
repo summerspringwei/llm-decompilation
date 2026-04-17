@@ -1,6 +1,8 @@
 import os
 import pickle
 import logging
+import tempfile
+import subprocess
 import torch
 import requests
 from tqdm import tqdm
@@ -15,11 +17,17 @@ from openai import OpenAI
 from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
 from utils.preprocessing_assembly import preprocessing_assembly
 from utils.preprocessing_llvm_ir import preprocessing_llvm_ir
-from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt, format_execution_error_prompt_with_ghidra_decompile_predict, format_llm_fix_prompt
+from utils.openai_helper import extract_llvm_code_from_response, format_compile_error_prompt, format_execution_error_prompt, format_execution_error_prompt_with_ghidra_decompile_predict, format_llm_fix_prompt, PromptType
 from models.rag.exebench_qdrant_base import ExebenchQdrantSearch
-from utils.openai_helper import GENERAL_INIT_PROMPT, SIMILAR_RECORD_PROMPT, GHIDRA_DECOMPILE_TEMPLATE, PromptType
+from utils.prompt_templates import (
+    GENERAL_INIT_PROMPT,
+    SIMILAR_RECORD_PROMPT,
+    GHIDRA_DECOMPILE_TEMPLATE,
+    GHIDRA_PCODE_INIT_PROMPT,
+    GHIDRA_PCODE_SIMILAR_RECORD_PROMPT,
+)
 from models.ghidra_decompile.ghidra_decompile_exebench import ghdria_decompile_record
-
+from utils.exebench_sample import ExebenchSample
 from utils.mylogger import logger
 
 
@@ -75,13 +83,17 @@ class LLMDecompileRecord:
                  prompt_type: PromptType,
                  collection_name_with_idx: str,
                  remove_comments: bool = True,
+                 use_pcode: bool = False,
                  num_retry: int = 10,
                  embedding_url=None,
                  qdrant_client=None,
                  dataset_for_qdrant_dir=None,
                  fix_prompt_type: PromptType = PromptType.COMPILE_FIX
                  ):
-        self.record = record
+        if isinstance(record, ExebenchSample):
+            self.record = record
+        else:
+            self.record = ExebenchSample.from_dict(record)
         self.idx = idx
         self.llm_client = llm_client
         self.model_name = model_name
@@ -90,39 +102,119 @@ class LLMDecompileRecord:
         self.prompt_type = prompt_type
         self.fix_prompt_type = fix_prompt_type
         self.remove_comments = remove_comments
+        self.use_pcode = use_pcode
         self.embedding_url = embedding_url
         self.qdrant_client = qdrant_client
         self.dataset_for_qdrant_dir = dataset_for_qdrant_dir
         self.num_retry = num_retry
         self.retry_response_validation: dict[int, ResponseValidation] = {}
         self.similar_record = None
+        self.pcode_text = None
+        self.similar_pcode_text = None
         self.score = None
         self.initial_prompt = None
         self.exebench_qdrant_search = ExebenchQdrantSearch(dataset_for_qdrant_dir, qdrant_client, embedding_url, collection_name_with_idx)
 
 
+    def _get_ghidra_script_path(self) -> str:
+        ghidra_home = os.environ.get("GHIDRA_HOME")
+        if ghidra_home:
+            return os.path.join(ghidra_home, "support/analyzeHeadless")
+        return "/data1/xiachunwei/Software/ghidra_11.4.2_PUBLIC/support/analyzeHeadless"
+
+    def _run_command(self, command, timeout: int = 120):
+        output = subprocess.run(command,
+                                capture_output=True,
+                                text=True,
+                                timeout=timeout)
+        return output.returncode, output.stdout, output.stderr
+
+    def _generate_pcode_text(self, record: ExebenchSample, label: str) -> str:
+        asm_code = record.asm.code[-1]
+        func_name = record.fname
+        ghidra_script = os.path.abspath(
+            os.path.join(os.path.dirname(__file__),
+                         "..",
+                         "ghidra_decompile",
+                         "ghidra_pcode_script.py"))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            asm_path = os.path.join(tmp_dir, f"{func_name}.s")
+            obj_path = os.path.join(tmp_dir, f"{func_name}.o")
+            out_path = os.path.join(tmp_dir, "pcode.txt")
+            with open(asm_path, "w") as f:
+                f.write(asm_code)
+            retcode, _, stderr = self._run_command(
+                ["clang", "-c", asm_path, "-o", obj_path], timeout=30)
+            if retcode != 0:
+                raise RuntimeError(f"Failed to compile assembly to object file: {stderr}")
+            project_dir = os.path.join(tmp_dir, f"ghidra_project_{self.idx}_{label}")
+            os.makedirs(project_dir, exist_ok=True)
+            project_name = f"project_{self.idx}_{label}"
+            cmd = [
+                self._get_ghidra_script_path(),
+                project_dir,
+                project_name,
+                "-import",
+                obj_path,
+                "-overwrite",
+                "-postscript",
+                ghidra_script,
+                func_name,
+                out_path,
+            ]
+            retcode, _, stderr = self._run_command(cmd, timeout=120)
+            if retcode != 0:
+                raise RuntimeError(f"Ghidra P-code generation failed: {stderr}")
+            with open(out_path, "r") as f:
+                return f.read()
+
+    def _get_pcode_text(self, record: ExebenchSample, label: str, cache_attr: str) -> str:
+        cached = getattr(self, cache_attr)
+        if cached:
+            return cached
+        pcode = self._generate_pcode_text(record, label)
+        setattr(self, cache_attr, pcode)
+        return pcode
+
     def prepare_basic_prompt(self):
-        asm_code = self.record["asm"]["code"][-1]
-        asm_code = preprocessing_assembly(asm_code,
-                                          remove_comments=self.remove_comments)
-        prompt = GENERAL_INIT_PROMPT.format(asm_code=asm_code)
+        if self.use_pcode:
+            p_code = self._get_pcode_text(self.record, f"record_{self.idx}", "pcode_text")
+            prompt = GHIDRA_PCODE_INIT_PROMPT.format(p_code=p_code)
+        else:
+            asm_code = self.record.asm.code[-1]
+            asm_code = preprocessing_assembly(asm_code,
+                                              remove_comments=self.remove_comments)
+            prompt = GENERAL_INIT_PROMPT.format(asm_code=asm_code)
         return prompt
 
     # TODO(Chunwei) Need to use api to call embedding model to find the similar record
     def prepare_prompt_from_similar_record(self):
-        self.similar_record, self.score = self.exebench_qdrant_search.find_similar_records_in_exebench_synth_rich_io(self.record)
-        asm_code = self.record["asm"]["code"][-1]
-        asm_code = preprocessing_assembly(asm_code,
-                                          remove_comments=self.remove_comments)
-        similar_asm_code = self.similar_record["asm"]["code"][-1]
-        similar_asm_code = preprocessing_assembly(
-            similar_asm_code, remove_comments=self.remove_comments)
-        similar_llvm_ir = self.similar_record["llvm_ir"]["code"][-1]
-        similar_llvm_ir = preprocessing_llvm_ir(similar_llvm_ir)
-        prompt = SIMILAR_RECORD_PROMPT.format(
-            asm_code=asm_code,
-            similar_asm_code=similar_asm_code,
-            similar_llvm_ir=similar_llvm_ir)
+        similar_record, self.score = self.exebench_qdrant_search.find_similar_records_in_exebench_synth_rich_io(
+            self.record.to_dict())
+        self.similar_record = ExebenchSample.from_dict(similar_record)
+        if self.use_pcode:
+            p_code = self._get_pcode_text(self.record, f"record_{self.idx}", "pcode_text")
+            similar_pcode = self._get_pcode_text(self.similar_record, f"similar_{self.idx}", "similar_pcode_text")
+            similar_llvm_ir = self.similar_record.llvm_ir.code[-1]
+            similar_llvm_ir = preprocessing_llvm_ir(similar_llvm_ir)
+            prompt = GHIDRA_PCODE_SIMILAR_RECORD_PROMPT.format(
+                pcode=p_code,
+                similar_pcode=similar_pcode,
+                similar_llvm_ir=similar_llvm_ir)
+        else:
+            asm_code = self.record.asm.code[-1]
+            asm_code = preprocessing_assembly(asm_code,
+                                              remove_comments=self.remove_comments)
+            similar_asm_code = self.similar_record.asm.code[-1]
+            similar_asm_code = preprocessing_assembly(
+                similar_asm_code, remove_comments=self.remove_comments)
+            similar_llvm_ir = self.similar_record.llvm_ir.code[-1]
+            similar_llvm_ir = preprocessing_llvm_ir(similar_llvm_ir)
+            prompt = SIMILAR_RECORD_PROMPT.format(
+                asm_code=asm_code,
+                similar_asm_code=similar_asm_code,
+                similar_llvm_ir=similar_llvm_ir)
         pickle.dump(
             self.similar_record,
             open(
@@ -132,9 +224,9 @@ class LLMDecompileRecord:
         return prompt
 
     def prepare_prompt_from_ghidra_decompile(self):
-        ghidra_decompile = ghdria_decompile_record((self.idx, self.record))
+        ghidra_decompile = ghdria_decompile_record((self.idx, self.record.to_dict()))
         ghidra_c_code = ghidra_decompile.ghidra_result.ghidra_decompiled_c_code
-        asm_code = preprocessing_assembly(self.record["asm"]["code"][-1],
+        asm_code = preprocessing_assembly(self.record.asm.code[-1],
                                           remove_comments=self.remove_comments)
         prompt = GHIDRA_DECOMPILE_TEMPLATE.format(asm_code=asm_code,
                                                   ghidra_c_code=ghidra_c_code)
@@ -142,6 +234,9 @@ class LLMDecompileRecord:
         return prompt
 
     def get_initial_prompt(self):
+        if self.use_pcode and self.prompt_type == PromptType.GHIDRA_DECOMPILE:
+            self.initial_prompt = self.prepare_basic_prompt()
+            return self.initial_prompt
         if self.prompt_type == PromptType.SIMILAR_RECORD:
             self.initial_prompt = self.prepare_prompt_from_similar_record()
         elif self.prompt_type == PromptType.GHIDRA_DECOMPILE:
@@ -155,6 +250,15 @@ class LLMDecompileRecord:
         """Call the openai api to inference one sample and evaluate the sample
 
         """
+        sample_dir = os.path.join(
+            self.output_dir, f"sample_{self.idx}"
+            if retry_count == -1 else f"sample_{self.idx}_retry_{retry_count}")
+        if not os.path.exists(sample_dir):
+            os.makedirs(sample_dir, exist_ok=True)
+        prompt_txt_path = os.path.join(sample_dir, "prompt.txt")
+        if not os.path.exists(prompt_txt_path):
+            with open(prompt_txt_path, "w") as f:
+                f.write(prompt)
         response_file_path = os.path.join(
             self.output_dir, f"response_{self.idx}.pkl" if retry_count == -1
             else f"response_{self.idx}_retry_{retry_count}.pkl")
@@ -212,7 +316,7 @@ class LLMDecompileRecord:
                 with open(predict_assembly_path, 'r') as f:
                     assembly = f.read()
                     predict_execution_success = eval_assembly(
-                        self.record, assembly)
+                        self.record.to_dict(), assembly)
             return EvaluationResult(predict_compile_success,
                                     predict_execution_success, error_msg, predict, assembly)
 
@@ -226,18 +330,20 @@ class LLMDecompileRecord:
                 executor.map(eval_predict, range(len(predict_list)), predict_list))
         # Evaluate the target LLVM ir to make sure the target is correct
         target_compile_success, target_assembly_path, target_error_msg = compile_llvm_ir(
-            self.record["llvm_ir"]["code"][-1], sample_dir, name_hint="target")
+            self.record.llvm_ir.code[-1], sample_dir, name_hint="target")
         target_assembly = ""
         target_execution_success = False
         if target_compile_success:
             with open(target_assembly_path, 'r') as f:
                 target_assembly = f.read()
-                target_execution_success = eval_assembly(self.record, target_assembly)
+                target_execution_success = eval_assembly(self.record.to_dict(), target_assembly)
 
         # Summarize the evaluation results
         target_evaluation_result = EvaluationResult(target_compile_success,
                                                     target_execution_success,
-                                                    target_error_msg, self.record["llvm_ir"]["code"][-1], target_assembly)
+                                                    target_error_msg,
+                                                    self.record.llvm_ir.code[-1],
+                                                    target_assembly)
         response_validation = ResponseValidation(
             prompt, response, retry_count, predict_evaluation_results_list,
             target_evaluation_result)
@@ -256,7 +362,7 @@ class LLMDecompileRecord:
 
     def get_most_similar_predict(self, retry_count: int) -> EvaluationResult:
         predict_evaluation_results_list = self.retry_response_validation[retry_count - 1].predict_evaluation_results_list
-        target_assembly = self.record["asm"]["code"][-1]
+        target_assembly = self.record.asm.code[-1]
         compilable_assembly_list = [(idx, r.assembly) for idx, r in enumerate(predict_evaluation_results_list) if r.compile_success]
         
         if len(compilable_assembly_list) == 0:
@@ -307,7 +413,7 @@ class LLMDecompileRecord:
             r.compile_success for r in self.retry_response_validation[
                 retry_count - 1].predict_evaluation_results_list
         ]
-        target_asm_code = self.record["asm"]["code"][-1]
+        target_asm_code = self.record.asm.code[-1]
         target_asm_code = preprocessing_assembly(
             target_asm_code, remove_comments=self.remove_comments)
         error_msg, fix_idx = None, 0
@@ -352,11 +458,18 @@ class LLMDecompileRecord:
                                                     predict_llvm_ir,
                                                     predict_assembly)
             elif self.prompt_type == PromptType.GHIDRA_DECOMPILE_WITH_PREDICT:
-                ghidra_decompiler = ghdria_decompile_record((self.idx, self.record))
-                ghidra_c_code = ghidra_decompiler.decompile_external_assembly(predict_assembly, self.record["func_info"]["functions"][0]["name"])
+                ghidra_decompiler = ghdria_decompile_record((self.idx, self.record.to_dict()))
+                ghidra_c_code = ghidra_decompiler.decompile_external_assembly(
+                    predict_assembly, self.record.func_info.functions[0]["name"])
                 prompt = format_execution_error_prompt_with_ghidra_decompile_predict(self.initial_prompt,
                                                                                     predict_assembly,
                                                                                     ghidra_c_code)
+            elif self.prompt_type == PromptType.TEST_ERROR_TEMPLATE_WITH_ANGR_DEBUG_TRACE:
+                #TODO
+                prompt = format_execution_error_prompt_with_angr_debug_trace(self.initial_prompt,
+                                                                            predict_llvm_ir,
+                                                                            predict_assembly,
+                                                                            )
             else:
                 raise ValueError(f"Invalid prompt type: {self.prompt_type}")
             
@@ -478,7 +591,7 @@ class LLMDecompileRecord:
         self,
         retry_count: int | None,
     ) -> str:
-        target_assembly = self.record["asm"]["code"][-1]
+        target_assembly = self.record.asm.code[-1]
         #TODO
         most_similar_evaluation_result = self.get_most_similar_evaluation_result(retry_count)
         if most_similar_evaluation_result is None:

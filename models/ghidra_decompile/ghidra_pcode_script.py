@@ -16,87 +16,79 @@ def _find_function_by_name(func_name, program):
     return None
 
 
-def _format_address_with_label(address, symbol_table):
-    """Format an address with its label if available."""
-    symbol = symbol_table.getPrimarySymbol(address)
-    if symbol is not None and symbol.getName() != "":
-        return symbol.getName()
-    return address.toString()
+def _build_addr_to_bb(high_func):
+    """Build mapping from block start address to BB label (BB0, BB1, ...)."""
+    blocks = list(high_func.getBasicBlocks())
+    # Sort by start address so entry block is first and order is deterministic
+    blocks.sort(key=lambda b: b.getStart().getOffset())
+    addr_to_bb = {}
+    for i, block in enumerate(blocks):
+        addr_to_bb[block.getStart()] = "BB{}".format(i)
+    return addr_to_bb
 
 
-def _format_varnode(varnode, language, symbol_table):
-    """Format a Varnode with human-readable register names and labels."""
+def _get_symbol_at_address(addr, symbol_table):
+    """Return the primary symbol name at this address (e.g. function name), or None."""
+    if symbol_table is None:
+        return None
+    symbol = symbol_table.getPrimarySymbol(addr)
+    if symbol is not None:
+        name = symbol.getName()
+        if name is not None and name != "":
+            return name
+    return None
+
+
+def _format_varnode(varnode, language, symbol_table, addr_to_bb):
+    """Format a Varnode with human-readable register names; block starts as BB0, BB1, ..."""
     if varnode.isRegister():
-        # Use language-specific toString for register names
-        # This returns the register name like "RAX", "RBX", etc.
         reg_name = varnode.toString(language)
-        # Format as (register, <name>, <size>) to match original format
         return "(register, {}, {})".format(reg_name, varnode.getSize())
     elif varnode.isConstant():
-        # Format constants
         return "(const, 0x{:x}, {})".format(varnode.getOffset(), varnode.getSize())
     elif varnode.isUnique():
-        # Format unique temporaries
         return "(unique, 0x{:x}, {})".format(varnode.getOffset(), varnode.getSize())
     elif varnode.isAddress():
-        # Format addresses with labels
         addr = varnode.getAddress()
-        label = _format_address_with_label(addr, symbol_table)
-        if label != addr.toString():
-            # Use label if available
-            return "(ram, {}, {})".format(label, varnode.getSize())
-        else:
-            # Fallback to hex address
-            return "(ram, 0x{:x}, {})".format(addr.getOffset(), varnode.getSize())
+        # Use BB label if this address is the start of a basic block (e.g. jump target)
+        if addr_to_bb is not None and addr in addr_to_bb:
+            return "(ram, {}, {})".format(addr_to_bb[addr], varnode.getSize())
+        # Prefer symbol/function name (e.g. for CALL target)
+        symbol_name = _get_symbol_at_address(addr, symbol_table)
+        if symbol_name is not None:
+            return "(ram, {}, {})".format(symbol_name, varnode.getSize())
+        # Fallback: hex address
+        return "(ram, 0x{:x}, {})".format(addr.getOffset(), varnode.getSize())
     else:
-        # Fallback to default representation
         return varnode.toString()
 
 
-def _format_pcode_op(pcode_op, language, symbol_table):
-    """Format a P-code operation with human-readable symbols."""
-    seq = pcode_op.getSeqnum()
-    addr = seq.getTarget()
-    addr_str = _format_address_with_label(addr, symbol_table)
-    
-    # Get operation mnemonic
+def _format_pcode_op(pcode_op, language, symbol_table, addr_to_bb, include_addr_and_id=False):
+    """Format a P-code operation. No address/instruction id unless include_addr_and_id."""
     opcode = pcode_op.getOpcode()
     try:
         opcode_name = pcode_op.getMnemonic()
     except:
-        # Fallback if getMnemonic() doesn't exist
         opcode_name = str(opcode)
-    
-    # Format output (if any)
+
     output = pcode_op.getOutput()
     output_str = ""
     if output is not None:
-        output_str = _format_varnode(output, language, symbol_table) + " = "
-    
-    # Format inputs
+        output_str = _format_varnode(output, language, symbol_table, addr_to_bb) + " = "
+
     inputs = []
     for i in range(pcode_op.getNumInputs()):
         input_varnode = pcode_op.getInput(i)
-        formatted_input = _format_varnode(input_varnode, language, symbol_table)
-        
-        # Special handling: if this is an address input for control flow, try to get label
-        if input_varnode.isAddress():
-            addr_input = input_varnode.getAddress()
-            label = _format_address_with_label(addr_input, symbol_table)
-            if label != addr_input.toString():
-                formatted_input = "(ram, {}, {})".format(label, input_varnode.getSize())
-        
+        formatted_input = _format_varnode(input_varnode, language, symbol_table, addr_to_bb)
         inputs.append(formatted_input)
-    
-    # Build the operation string
-    # PcodeOp opcode constants
+
     CBRANCH = PcodeOp.CBRANCH
     BRANCH = PcodeOp.BRANCH
     CALL = PcodeOp.CALL
     CALLIND = PcodeOp.CALLIND
     RETURN = PcodeOp.RETURN
     STORE = PcodeOp.STORE
-    
+
     if opcode == CBRANCH:
         op_str = " ---  CBRANCH " + " , ".join(inputs)
     elif opcode == BRANCH:
@@ -112,8 +104,11 @@ def _format_pcode_op(pcode_op, language, symbol_table):
             op_str = output_str + opcode_name + " " + " , ".join(inputs)
         else:
             op_str = opcode_name + " " + " , ".join(inputs)
-    
-    return "[{}:{}] {}".format(addr_str, seq.getTime(), op_str)
+
+    if include_addr_and_id:
+        seq = pcode_op.getSeqnum()
+        return "[{}:{}] {}".format(seq.getTarget().toString(), seq.getTime(), op_str)
+    return op_str
 
 
 def decompile_to_pcode_text(func_name, current_program):
@@ -126,27 +121,31 @@ def decompile_to_pcode_text(func_name, current_program):
     if not results.decompileCompleted():
         raise RuntimeError("Decompilation failed.")
     high_func = results.getHighFunction()
-    
-    # Get language and symbol table for formatting
+
     language = current_program.getLanguage()
     symbol_table = current_program.getSymbolTable()
-    
+    addr_to_bb = _build_addr_to_bb(high_func)
+
     lines = []
     lines.append("function {}".format(func.getName()))
     entry_addr = func.getEntryPoint()
-    entry_label = _format_address_with_label(entry_addr, symbol_table)
-    lines.append("entry {}".format(entry_label))
-    block_iter = high_func.getBasicBlocks()
-    for block in block_iter:
-        op_iter = block.getIterator()
+    entry_bb = addr_to_bb.get(entry_addr)
+    if entry_bb is None:
+        # Entry might match a block start; if not, use BB0
+        blocks = list(high_func.getBasicBlocks())
+        blocks.sort(key=lambda b: b.getStart().getOffset())
+        entry_bb = addr_to_bb[blocks[0].getStart()]
+    lines.append("entry {}".format(entry_bb))
+
+    blocks = list(high_func.getBasicBlocks())
+    blocks.sort(key=lambda b: b.getStart().getOffset())
+    for block in blocks:
         lines.append("")
-        start_addr = block.getStart()
-        stop_addr = block.getStop()
-        start_label = _format_address_with_label(start_addr, symbol_table)
-        stop_label = _format_address_with_label(stop_addr, symbol_table)
-        lines.append("## block {} -> {}".format(start_label, stop_label))
+        bb_label = addr_to_bb[block.getStart()]
+        lines.append("## block {}".format(bb_label))
+        op_iter = block.getIterator()
         while op_iter.hasNext():
-            lines.append(_format_pcode_op(op_iter.next(), language, symbol_table))
+            lines.append(_format_pcode_op(op_iter.next(), language, symbol_table, addr_to_bb, include_addr_and_id=False))
     return "\n".join(lines)
 
 

@@ -5,104 +5,20 @@ from enum import Enum
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(filename)s: %(lineno)d - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-
-BASIC_DECOMPILE_TEMPLATE = """
-Please decompile the following assembly code to LLVM IR and please place the final generated LLVM IR code between ```llvm and ```: 
-{target_assembly}
-Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
-For the global variables, please declare (not define) them in the LLVM IR code.
-Set the target data layout and target triple to the following:
-```llvm
-target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
-target triple = "x86_64-unknown-linux-gnu"
-```
-"""
-
-GENERAL_INIT_PROMPT = """
-Please decompile the following assembly code to LLVM IR
-and please place the final generated LLVM IR code between ```llvm and ```: {asm_code} 
-Note that LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once."""
-
-LLM4COMPILE_PROMPT = "Disassemble this code to LLVM IR: <code>{asm_code} \n</code>"
-
-SIMILAR_RECORD_PROMPT = """
-Please decompile the assembly code to LLVM IR.
-Here is a example of the similar assembly code and the corresponding decompiled LLVM IR: 
-```assembly
-{similar_asm_code} 
-```
-→
-```llvm
-{similar_llvm_ir}
-```
-Please decompile the following assembly code to LLVM IR.
-* Note that *
-- LLVM IR follow the Static Single Assignment format, which mean a variable can only be defined once.
-- The decompiled LLVM IR should be valid and can be compiled successfully.
-- Place the final generated LLVM IR code between ```llvm and ```.
-```assembly
-{asm_code}
-```
-"""
-
-COMPILE_ERROR_TEMPLATE = """
-You generated the following LLVM IR but it is failed to be compiled: ```llvm
-{predict}
-```
-The compilation error message is as follows: {error_msg}
-Please correct the LLVM IR code based on the similar example and make sure it meets both the semantic and the syntax.
-place the final generated LLVM IR code between ```llvm and ```.
-"""
-
-TEST_ERROR_TEMPLATE = """
-Then you generated the following LLVM IR: ```llvm\n{predict}```\n 
-After I compile the LLVM IR you provided, the generated assembly is: {predict_assembly}\n
-The result is not right. Please compare the generated assembly with the original assembly and re-generate the LLVM IR.\n
-Place the final generated LLVM IR code between ```llvm and ```.
-"""
-
-TEST_ERROR_TEMPLATE_WITH_GHIDRA_DECOMPILE_PREDICT = """
-Then you generated the following LLVM IR: ```llvm\n{predict}```\n 
-However your generated LLVM IR is not right. 
-To help you correct the LLVM IR, I provide the Ghidra decompiled C code for your provided LLVM IR:
-```C
-{predict_ghidra_c_code}
-```
-Please compare the original decompiled Ghidra C code with your generated LLVM IR and corresponding Ghidra C code, 
-find the differences and correct the LLVM IR.\n
-Place the final generated LLVM IR code between ```llvm and ```.
-"""
-
-GHIDRA_DECOMPILE_TEMPLATE = """
-Please decompile the assembly code to LLVM IR.
-```assembly
-{asm_code}
-```
-Here is the C code that is decompiled by Ghidra decompiler for the assembly code:
-```C 
-{ghidra_c_code}
-```
-Please reference the Ghidra decompiled C code to decompile the assembly code to LLVM IR.
-When reference the Ghidra decompiled C code, please consider the following points:
-- The number of parameters of Ghidra is typically correct, but the parameter types may be incorrect, especially for strcut and pointer types.
-- The types of Ghidra may be incorrect, especially for strcut and pointer types. please guess the correct types based on the context.
-- The overall structure of Ghidra is typically correct, but please check the logic of the code.
-- The return type and value of the function of Ghidra is likely to be correct.
-When generating the LLVM IR, please consider the following points:
-- LLVM IR should follow the Static Single Assignment format, which mean a variable can only be defined once.
-- Please think about the LLVM Language Reference Manual to make sure the generated LLVM IR is valid and can be compiled successfully.
-- Place the final generated LLVM IR code between ```llvm and ```.
-"""
-
-LLM_FIX_PROMPT = """
-You have generated the following LLVM IR: ```llvm\n{predict_llvm_ir}```\n
-The corresponding assembly code compiled from the generated LLVM IR is: ```assembly\n{predict_assembly}```\n
-However your generated LLVM IR is not right.
-I have called a LLM to analyze the reason why the generated LLVM IR is not right.
-Please correct the LLVM IR based on the following analysis:
-{analysis}
-Place the final generated LLVM IR code between ```llvm and ```.
-"""
+from utils.prompt_templates import (
+    BASIC_DECOMPILE_TEMPLATE,
+    GENERAL_INIT_PROMPT,
+    GHIDRA_PCODE_INIT_PROMPT,
+    LLM4COMPILE_PROMPT,
+    SIMILAR_RECORD_PROMPT,
+    GHIDRA_PCODE_SIMILAR_RECORD_PROMPT,
+    COMPILE_ERROR_TEMPLATE,
+    TEST_ERROR_TEMPLATE,
+    TEST_ERROR_TEMPLATE_WITH_GHIDRA_DECOMPILE_PREDICT,
+    GHIDRA_DECOMPILE_TEMPLATE,
+    LLM_FIX_PROMPT,
+    TEST_ERROR_TEMPLATE_WITH_ANGR_DEBUG_TRACE
+)
 
 def format_compile_error_prompt(first_prompt, predict, error_msg):
     prompt = first_prompt + COMPILE_ERROR_TEMPLATE.format(
@@ -125,6 +41,16 @@ def format_execution_error_prompt_with_ghidra_decompile_predict(first_prompt, pr
     prompt = first_prompt + TEST_ERROR_TEMPLATE_WITH_GHIDRA_DECOMPILE_PREDICT.format(
         predict=predict,
         predict_ghidra_c_code=predict_ghidra_c_code
+    )
+    return prompt
+
+
+def format_execution_error_prompt_with_angr_debug_trace(first_prompt, predict_llvm_ir, predict_assembly, target_execution_trace, predict_execution_trace):
+    prompt = first_prompt + TEST_ERROR_TEMPLATE_WITH_ANGR_DEBUG_TRACE.format(
+        predict_llvm_ir=predict_llvm_ir,
+        predict_assembly=predict_assembly,
+        target_execution_trace=target_execution_trace,
+        predict_execution_trace=predict_execution_trace
     )
     return prompt
 
@@ -186,6 +112,7 @@ class PromptType(Enum):
     BASIC = "basic"
     SIMILAR_RECORD = "in-context-learning"
     GHIDRA_DECOMPILE = "ghidra-decompile"
+    GHIDRA_PCODE_DECOMPILE = "ghidra-pcode-decompile"
     GHIDRA_DECOMPILE_WITH_PREDICT = "ghidra-decompile-with-predict"
     COMPILE_FIX = "compile-fix"
     LLM_FIX = "llm-fix"
