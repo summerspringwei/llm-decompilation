@@ -16,7 +16,8 @@ from exebench import Wrapper, diff_io, exebench_dict_to_dict, LLVMAssembler
 from utils.extract_code import extract_llmcompiler_code_blocks
 from models.assembly_analyzer.extract_asm_function_define import split_elf_functions
 
-logging.basicConfig(format='%(asctime)s - %(filename)s:%(lineno)s - %(message)s ', level=logging.INFO)
+from utils.logging_config import setup_logging
+setup_logging()
 
 
 def compile_llvm_ir(llvm_ir: str, compile_dir: str, name_hint)->tuple[bool, str]:

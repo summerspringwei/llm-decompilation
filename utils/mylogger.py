@@ -1,7 +1,5 @@
-import logging
+"""Backward-compatibility shim — prefer ``utils.logging_config`` for new code."""
 
-logging.basicConfig(
-    level=logging.INFO,
-    format=
-    '%(asctime)s - %(filename)s: %(lineno)d - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from utils.logging_config import get_logger, logger, setup_logging  # noqa: F401
+
+__all__ = ["get_logger", "logger", "setup_logging"]
