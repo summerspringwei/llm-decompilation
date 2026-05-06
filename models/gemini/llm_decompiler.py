@@ -39,6 +39,7 @@ from models.ghidra_decompile.ghidra_decompile_exebench import (
     ghidra_decompile_record,
 )
 from models.rag.exebench_qdrant_base import ExebenchQdrantSearch
+from exebench import get_angr_traces
 from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
 from utils.exebench_sample import ExebenchSample
 from utils.llm_response_parser import (
@@ -53,6 +54,7 @@ from utils.prompt_builder import (
     build_compile_error_prompt,
     build_execution_error_prompt,
     build_execution_error_prompt_with_ghidra_decompile,
+    build_execution_error_prompt_with_angr_trace,
     build_failure_analysis_prompt,
     build_ghidra_decompile_prompt,
     build_llm_fix_prompt,
@@ -219,6 +221,7 @@ class LLMDecompileRecord:
         """Generate Ghidra P-code text from assembly via a temp-dir pipeline."""
         asm_code = record.asm.code[-1]
         func_name = record.fname
+        
         ghidra_script = os.path.abspath(
             os.path.join(
                 os.path.dirname(__file__),
@@ -613,6 +616,16 @@ class LLMDecompileRecord:
         predict_assembly = preprocessing_assembly(
             best.assembly, remove_comments=self.config.remove_comments
         )
+
+        if self.config.use_angr_trace and not best.execution_success:
+            target_trace, predict_trace = get_angr_traces(
+                self.record.to_dict(),
+                self.record.asm.code[-1],
+                predict_assembly
+            )
+            return build_execution_error_prompt_with_angr_trace(
+                self.initial_prompt, predict_llvm_ir, predict_assembly, target_trace, predict_trace
+            )
 
         if self.prompt_type in (
             PromptType.GHIDRA_DECOMPILE,

@@ -35,7 +35,8 @@ For local models (Qwen3-32B, Qwen3-30B-A3B), ensure your model server is running
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7 && vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-32B --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --served-model-name Qwen3-32B
- python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 32 --port 9002 --model gpt-oss-20b --use_pcode > tmp_gpt-oss-20b-sampled_dataset_with_loops_and_only_one_bb_164.log 
+
+python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 1 --port 9001 --model gpt-oss-20b --use_pcode > tmp_gpt-oss-20b-sampled_dataset_with_loops_and_only_one_bb_164.log 
 ```
 
 ```bash
@@ -46,8 +47,14 @@ export CUDA_VISIBLE_DEVICES=7 && vllm serve /data1/xiachunwei/Datasets/Models/gp
 export CUDA_VISIBLE_DEVICES=4,5 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-120b --port 9002 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2  --async-scheduling --served-model-name gpt-oss-120b 
 ```
 ```bash
-python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 64 --port 9002 --model gpt-oss-120b 2>&1 | tee gpt-oss-120b-tmp_sampled_dataset_with_loops_and_only_one_bb_164
+python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 32 --port 9001 --model gpt-oss-120b 2>&1 | tee gpt-oss-120b-tmp_sampled_dataset_with_loops_and_only_one_bb_164
 ```
+
+Run with angr runtime trace debugging
+```bash
+python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 1 --port 9001 --model gpt-oss-20b --embedding_url  http://localhost:8125/embed/batch --use_angr_trace 
+```
+
 ```bash
 export CUDA_VISIBLE_DEVICES=6,7 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-120b --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --async-scheduling --served-model-name gpt-oss-120b
 
@@ -79,10 +86,17 @@ Access web UI at http://localhost:6333/dashboard
 ```
 
 Start embedding model service:
+You can either use the `Qwen3` model as the embedding model:
 ```bash
 python3 models/rag/embedding_service.py
 
 vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B --task embed --served-model-name Qwen3-Embedding-8B --port 8001
+```
+
+Or use HermesSim as the embedding model:
+```bash
+cd ~/Projects/HermesSim
+python3 e2e/hermessim_embedding_service.py
 ```
 
 ## Usage
@@ -210,14 +224,6 @@ You can modify the prompt templates in `utils/openai_helper.py`:
 - `SIMILAR_RECORD_PROMPT`: In-context learning prompt
 - `format_compile_error_prompt`: Compile error fixing prompt
 - `format_execution_error_prompt`: Execution error fixing prompt
-
-### Custom Evaluation
-
-The evaluation logic can be customized in the `evaluate_response` method to add additional validation criteria.
-
-### Batch Processing
-
-For batch processing, you can extend the tool to process multiple samples automatically by modifying the event handlers.
 
 ## Contributing
 

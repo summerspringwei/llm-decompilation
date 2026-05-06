@@ -90,6 +90,7 @@ class DecompilationConfig:
     fix_prompt_type: str = "compile-fix"
     remove_comments: bool = True
     use_pcode: bool = False
+    use_angr_trace: bool = False
 
     # Dataset
     dataset_name: str = "sampled_dataset_with_loops_and_only_one_bb_164"
@@ -131,6 +132,7 @@ class DecompilationConfig:
             prompt_type=getattr(args, "prompt_type", cls.prompt_type),
             remove_comments=getattr(args, "remove_comments", cls.remove_comments),
             use_pcode=getattr(args, "use_pcode", cls.use_pcode),
+            use_angr_trace=getattr(args, "use_angr_trace", cls.use_angr_trace),
             dataset_name=getattr(args, "dataset_name", cls.dataset_name),
             rag=rag,
         )

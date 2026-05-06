@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_generate", type=int, default=8)
     parser.add_argument("--num_processes", type=int, default=1)
     parser.add_argument("--use_pcode", action="store_true")
+    parser.add_argument("--use_angr_trace", action="store_true")
     return parser.parse_args()
 
 
@@ -162,10 +163,12 @@ def _build_dataset_pairs(
     use_pcode: bool,
     remove_comments: bool,
     prompt_type: PromptType,
+    use_angr_trace: bool,
 ) -> dict[str, tuple[str, str]]:
     """Return ``{dataset_name: (dataset_path, output_dir)}``."""
     with_comments = "without" if remove_comments else "with"
     input_label = "ghidra-pcode" if use_pcode else "assembly"
+    angr_trace_label = "angr-trace" if use_angr_trace else "no-angr-trace"
 
     def _output_dir(subset_label: str) -> str:
         return os.path.join(
@@ -175,7 +178,7 @@ def _build_dataset_pairs(
             model,
             (
                 f"{subset_label}_{model}-n{num_generate}-{input_label}"
-                f"-{with_comments}-comments-{prompt_type}-similar-hermes"
+                f"-{with_comments}-comments-{prompt_type}-similar-hermes-{angr_trace_label}"
             ),
         )
 
@@ -238,6 +241,7 @@ def main() -> None:
         use_pcode=config.use_pcode,
         remove_comments=config.remove_comments,
         prompt_type=prompt_type,
+        use_angr_trace=config.use_angr_trace,
     )
     if config.dataset_name not in dataset_pairs:
         raise ValueError(
