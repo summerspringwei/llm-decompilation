@@ -618,13 +618,45 @@ class LLMDecompileRecord:
         )
 
         if self.config.use_angr_trace and not best.execution_success:
-            target_trace, predict_trace = get_angr_traces(
-                self.record.to_dict(),
-                self.record.asm.code[-1],
-                predict_assembly
+            target_assembly_for_trace = (
+                getattr(prev.target_evaluation_result, "assembly", None)
+                or self.record.asm.code[-1]
             )
-            return build_execution_error_prompt_with_angr_trace(
-                self.initial_prompt, predict_llvm_ir, predict_assembly, target_trace, predict_trace
+            target_trace, predict_trace, trace_link_error = get_angr_traces(
+                self.record.to_dict(),
+                target_assembly_for_trace,
+                predict_assembly,
+                include_error=True,
+            )
+            if target_trace.strip() and predict_trace.strip():
+                return build_execution_error_prompt_with_angr_trace(
+                    self.initial_prompt,
+                    predict_llvm_ir,
+                    predict_assembly,
+                    target_trace,
+                    predict_trace,
+                )
+            if trace_link_error.strip():
+                logger.warning(
+                    "angr trace wrapper link failed for index %d retry %d; using compile-error prompt",
+                    self.idx,
+                    retry_count,
+                )
+                return build_compile_error_prompt(
+                    self.initial_prompt,
+                    predict_llvm_ir,
+                    (
+                        "The LLVM IR compiled to assembly, but the generated "
+                        "assembly could not be linked into the ExeBench wrapper "
+                        "for angr tracing. Fix the LLVM IR so the generated "
+                        "assembly is self-contained and linkable.\n\n"
+                        f"{trace_link_error}"
+                    ),
+                )
+            logger.warning(
+                "angr trace unavailable for index %d retry %d; using execution-error prompt",
+                self.idx,
+                retry_count,
             )
 
         if self.prompt_type in (

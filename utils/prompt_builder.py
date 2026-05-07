@@ -8,6 +8,7 @@ inputs and return prompt strings.
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from utils.prompt_templates import (
@@ -81,6 +82,56 @@ def build_ghidra_decompile_prompt(
 # ---------------------------------------------------------------------------
 
 
+_ADDRESS_RE = re.compile(r"^\s*0x[0-9a-fA-F]+:\s*")
+
+
+def _normalize_trace_line(line: str) -> str:
+    """Remove unstable instruction addresses before comparing trace lines."""
+    return _ADDRESS_RE.sub("", line).strip()
+
+
+def _trace_window(
+    target_trace: str,
+    predict_trace: str,
+    context_before: int = 12,
+    context_after: int = 80,
+    max_chars_per_trace: int = 12_000,
+) -> tuple[str, str]:
+    """Return compact target/predict trace windows around first divergence."""
+    target_lines = target_trace.splitlines()
+    predict_lines = predict_trace.splitlines()
+
+    first_diff = 0
+    max_common = min(len(target_lines), len(predict_lines))
+    while first_diff < max_common:
+        if _normalize_trace_line(target_lines[first_diff]) != _normalize_trace_line(
+            predict_lines[first_diff]
+        ):
+            break
+        first_diff += 1
+
+    start = max(0, first_diff - context_before)
+    end = min(max(len(target_lines), len(predict_lines)), first_diff + context_after)
+
+    def _format(lines: list[str], label: str) -> str:
+        window = lines[start:min(end, len(lines))]
+        prefix = [
+            f"; {label} trace lines: {len(lines)}",
+            f"; first divergent line: {first_diff}",
+            f"; showing lines [{start}, {min(end, len(lines))})",
+        ]
+        if start > 0:
+            prefix.append(f"; omitted {start} earlier lines")
+        if end < len(lines):
+            window.append(f"; omitted {len(lines) - end} later lines")
+        text = "\n".join(prefix + window)
+        if len(text) > max_chars_per_trace:
+            return text[:max_chars_per_trace] + "\n; trace truncated by character cap"
+        return text
+
+    return _format(target_lines, "target"), _format(predict_lines, "predict")
+
+
 def build_compile_error_prompt(
     initial_prompt: str,
     predict: str,
@@ -124,7 +175,11 @@ def build_execution_error_prompt_with_angr_trace(
     target_execution_trace: str,
     predict_execution_trace: str,
 ) -> str:
-    """Append an execution-fix instruction that includes angr traces."""
+    """Append an execution-fix instruction that includes compact angr traces."""
+    target_execution_trace, predict_execution_trace = _trace_window(
+        target_execution_trace,
+        predict_execution_trace,
+    )
     return initial_prompt + TEST_ERROR_TEMPLATE_WITH_ANGR_DEBUG_TRACE.format(
         predict_llvm_ir=predict_llvm_ir,
         predict_assembly=predict_assembly,
