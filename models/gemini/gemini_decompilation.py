@@ -71,6 +71,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_processes", type=int, default=1)
     parser.add_argument("--use_pcode", action="store_true")
     parser.add_argument("--use_angr_trace", action="store_true")
+    parser.add_argument(
+        "--sample_indices",
+        type=str,
+        default="",
+        help="Comma-separated original dataset indices to run, e.g. 65,99.",
+    )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=0,
+        help="Run only the first N samples from the selected dataset.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="",
+        help="Override the validation output directory.",
+    )
     return parser.parse_args()
 
 
@@ -112,6 +130,8 @@ def _decompile_func(record, idx: int) -> LLMDecompileRecord:
 def run_decompilation(
     dataset,
     config: DecompilationConfig,
+    sample_indices: list[int] | None = None,
+    max_samples: int = 0,
 ) -> list[LLMDecompileRecord]:
     """Run decompilation on *dataset* using *config*."""
     output_dir = config.output_dir
@@ -119,7 +139,12 @@ def run_decompilation(
         raise ValueError(f"Output directory {output_dir} does not exist.")
     os.makedirs(os.path.join(output_dir, "similar_records"), exist_ok=True)
 
-    args_list = [(record, idx) for idx, record in enumerate(dataset)]
+    if sample_indices:
+        args_list = [(dataset[idx], idx) for idx in sample_indices]
+    elif max_samples and max_samples > 0:
+        args_list = [(dataset[idx], idx) for idx in range(min(max_samples, len(dataset)))]
+    else:
+        args_list = [(record, idx) for idx, record in enumerate(dataset)]
 
     with Pool(processes=config.num_processes) as pool:
         results = pool.starmap(_decompile_func, args_list)
@@ -249,12 +274,26 @@ def main() -> None:
             f"Known: {sorted(dataset_pairs)}"
         )
     dataset_path, output_dir = dataset_pairs[config.dataset_name]
+    if args.output_dir:
+        output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
     config.output_dir = output_dir
     _config = config
 
     dataset = load_from_disk(dataset_path)
-    run_decompilation(dataset, config)
+    sample_indices = []
+    if args.sample_indices.strip():
+        sample_indices = [
+            int(idx.strip())
+            for idx in args.sample_indices.split(",")
+            if idx.strip()
+        ]
+    run_decompilation(
+        dataset,
+        config,
+        sample_indices=sample_indices,
+        max_samples=args.max_samples,
+    )
 
 
 if __name__ == "__main__":

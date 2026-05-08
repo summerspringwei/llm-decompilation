@@ -214,5 +214,5 @@ test.py
 tmp/
 tmp.*
 *.json
-
+tmp_*
 models/gemini/analyze_cfg_exebench.ipynb
