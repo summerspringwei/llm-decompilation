@@ -70,10 +70,34 @@ Please correct the LLVM IR code based on the similar example and make sure it me
 place the final generated LLVM IR code between ```llvm and ```.
 """
 
+LLVM_SYNTAX_REPAIR_TEMPLATE = """
+You generated the following LLVM IR, but it is invalid LLVM IR and failed before execution:
+```llvm
+{predict}
+```
+The LLVM compiler error is:
+```text
+{error_msg}
+```
+Repair only the LLVM IR syntax/type/SSA/CFG problems while preserving the intended semantics from the original prompt.
+Follow these rules strictly:
+- Use valid LLVM IR syntax accepted by llc.
+- Every SSA name must be defined exactly once.
+- Use valid getelementptr syntax: getelementptr <pointee-type>, ptr <base>, ...
+- Use valid floating constants for float/double values.
+- Use vector constants with vector syntax, not array syntax.
+- Do not use inline asm unless the original assembly cannot be represented otherwise.
+- Keep global variables as declarations unless the function itself must define them.
+
+Return only the corrected LLVM IR between ```llvm and ```.
+"""
+
 TEST_ERROR_TEMPLATE = """
 Then you generated the following LLVM IR: ```llvm\n{predict}```\n 
 After I compile the LLVM IR you provided, the generated assembly is: {predict_assembly}\n
-The result is not right. Please compare the generated assembly with the original assembly and re-generate the LLVM IR.\n
+The result is not right.
+{execution_feedback}
+Please compare the generated assembly with the original assembly and re-generate the LLVM IR.\n
 Place the final generated LLVM IR code between ```llvm and ```.
 """
 
@@ -139,6 +163,7 @@ I compiled the generated LLVM IR into the following assembly code:
 {predict_assembly}
 ```
 and executed it.
+{execution_feedback}
 I then used angr to trace the execution of the assembly code and obtained an instruction-level execution trace.
 
 An example traced instruction is shown below:

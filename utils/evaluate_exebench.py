@@ -7,7 +7,7 @@ import pathlib
 import shutil
 import tqdm
 import fire
-from typing import Dict, List
+from typing import Any, Dict, List
 from multiprocessing import Pool
 from functools import partial
 from datasets import load_from_disk
@@ -69,6 +69,84 @@ compile_target_ir = partial(compile_llvm_ir, name_hint="target")
 compile_predicted_ir = partial(compile_llvm_ir, name_hint="predict")
 
 
+def eval_assembly_with_details(row: Dict, assembly: str) -> Dict[str, Any]:
+    """Evaluate assembly and return detailed first-failure diagnostics.
+
+    The details are intentionally plain Python values so they can be pickled
+    inside validation results and inserted into retry prompts.
+    """
+    result = {
+        "success": False,
+        "pass_count": 0,
+        "total_count": len(row.get("synth_io_pairs", {}).get("input", [])),
+        "first_failing_index": None,
+        "first_failing_input": None,
+        "first_expected_output": None,
+        "first_observed_output": None,
+        "error_msg": "",
+    }
+    synth_wrapper = None
+    try:
+        c_deps = (
+            row["synth_deps"]
+            + "\n"
+            + row["synth_io_pairs"]["dummy_funcs"][0]
+            + "\n"
+        ).replace("typedef int bool;", "")
+        synth_wrapper = Wrapper(
+            c_deps=c_deps + "\n",
+            func_c_signature=row["func_head_types"].replace("extern", ""),
+            func_assembly=assembly,
+            cpp_wrapper=row["synth_exe_wrapper"],
+            assembler_backend=LLVMAssembler(),
+        )
+        total = len(row["synth_io_pairs"]["input"])
+        result["total_count"] = total
+        for idx, (i, o) in enumerate(
+            zip(row["synth_io_pairs"]["input"], row["synth_io_pairs"]["output"])
+        ):
+            input_dict = exebench_dict_to_dict(i)
+            expected_output = exebench_dict_to_dict(o)
+            observed_output = synth_wrapper(input_dict)
+            if observed_output is None:
+                logging.error("Error: The code could not be compiled")
+                result.update(
+                    {
+                        "first_failing_index": idx,
+                        "first_failing_input": input_dict,
+                        "first_expected_output": expected_output,
+                        "first_observed_output": None,
+                        "error_msg": "Wrapper execution returned None.",
+                    }
+                )
+                return result
+            if diff_io(observed_output=observed_output, expected_output=expected_output):
+                result["pass_count"] += 1
+                continue
+            result.update(
+                {
+                    "first_failing_index": idx,
+                    "first_failing_input": input_dict,
+                    "first_expected_output": expected_output,
+                    "first_observed_output": observed_output,
+                }
+            )
+            break
+        result["success"] = result["pass_count"] == total
+        if not result["success"]:
+            logging.info(
+                "Error for %s total cases %d, success cases %d",
+                row["path"],
+                total,
+                result["pass_count"],
+            )
+    except Exception as e:
+        logging.error("Error for %s with error_msg: %s", row["path"], e)
+        result["error_msg"] = str(e)
+    finally:
+        return result
+
+
 def eval_assembly(row: Dict, assembly: str) -> bool:
     """Evaluate the assembly code by running the synthetic test cases.
     
@@ -79,41 +157,7 @@ def eval_assembly(row: Dict, assembly: str) -> bool:
     Returns:
         success: bool, true if the evaluation is successful.
     """
-    success = True
-    synth_wrapper = None
-    try:
-        c_deps=(row['synth_deps'] + '\n' +
-                    row['synth_io_pairs']['dummy_funcs'][0] + '\n').replace(
-                        'typedef int bool;', '')
-        synth_wrapper = Wrapper(
-            c_deps=c_deps + '\n',
-            func_c_signature=row['func_head_types'].replace('extern', ''),
-            func_assembly=assembly,
-            cpp_wrapper=row['synth_exe_wrapper'],
-            assembler_backend=LLVMAssembler())
-        count, total = 0, len(row['synth_io_pairs']['input'])
-        for i, o in zip(row['synth_io_pairs']['input'],
-                        row['synth_io_pairs']['output']):
-            observed_output = synth_wrapper(
-                exebench_dict_to_dict(i))  # Run synthetic
-            if observed_output is None:
-                logging.error('Error: The code could not be compiled')
-                success = False
-                return success
-            # print(observed_output, exebench_dict_to_dict(o))
-            count += 1 if diff_io(
-                observed_output=observed_output,
-                expected_output=exebench_dict_to_dict(o)) else 0
-        success = (count == total)
-        if not success:
-            logging.info(
-                f"Error for {row['path']} total cases {total}, success cases {count}"
-            )
-    except Exception as e:
-        logging.error(f"Error for {row['path']} with error_msg: {e}")
-        success = False
-    finally:
-        return success
+    return bool(eval_assembly_with_details(row, assembly)["success"])
 
 
 def has_aarch64_target(llvm_ir: str):

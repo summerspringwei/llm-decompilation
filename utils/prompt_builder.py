@@ -17,6 +17,7 @@ from utils.prompt_templates import (
     GHIDRA_DECOMPILE_TEMPLATE,
     GHIDRA_PCODE_INIT_PROMPT,
     GHIDRA_PCODE_SIMILAR_RECORD_PROMPT,
+    LLVM_SYNTAX_REPAIR_TEMPLATE,
     LLM_FIX_PROMPT,
     SIMILAR_RECORD_PROMPT,
     TEST_ERROR_TEMPLATE,
@@ -144,15 +145,51 @@ def build_compile_error_prompt(
     )
 
 
+def build_llvm_syntax_repair_prompt(
+    initial_prompt: str,
+    predict: str,
+    error_msg: str,
+) -> str:
+    """Append a strict syntax-only LLVM repair instruction."""
+    return initial_prompt + LLVM_SYNTAX_REPAIR_TEMPLATE.format(
+        predict=predict,
+        error_msg=error_msg,
+    )
+
+
+def format_execution_feedback(details: Optional[dict]) -> str:
+    """Format first-failing IO details for retry prompts."""
+    if not details:
+        return ""
+    total = details.get("total_count")
+    passed = details.get("pass_count")
+    failed_idx = details.get("first_failing_index")
+    if failed_idx is None:
+        return (
+            f"\nExecution summary: passed {passed}/{total} synthetic test cases, "
+            "but no first failing case was captured.\n"
+        )
+    return (
+        "\nExecution summary:\n"
+        f"- Passed synthetic test cases: {passed}/{total}\n"
+        f"- First failing test index: {failed_idx}\n"
+        f"- Input: {details.get('first_failing_input')}\n"
+        f"- Expected output: {details.get('first_expected_output')}\n"
+        f"- Observed output: {details.get('first_observed_output')}\n"
+    )
+
+
 def build_execution_error_prompt(
     initial_prompt: str,
     predict: str,
     predict_assembly: str,
+    execution_details: Optional[dict] = None,
 ) -> str:
     """Append an execution-fix instruction to *initial_prompt*."""
     return initial_prompt + TEST_ERROR_TEMPLATE.format(
         predict=predict,
         predict_assembly=predict_assembly,
+        execution_feedback=format_execution_feedback(execution_details),
     )
 
 
@@ -174,6 +211,7 @@ def build_execution_error_prompt_with_angr_trace(
     predict_assembly: str,
     target_execution_trace: str,
     predict_execution_trace: str,
+    execution_details: Optional[dict] = None,
 ) -> str:
     """Append an execution-fix instruction that includes compact angr traces."""
     target_execution_trace, predict_execution_trace = _trace_window(
@@ -183,6 +221,7 @@ def build_execution_error_prompt_with_angr_trace(
     return initial_prompt + TEST_ERROR_TEMPLATE_WITH_ANGR_DEBUG_TRACE.format(
         predict_llvm_ir=predict_llvm_ir,
         predict_assembly=predict_assembly,
+        execution_feedback=format_execution_feedback(execution_details),
         target_execution_trace=target_execution_trace,
         predict_execution_trace=predict_execution_trace,
     )

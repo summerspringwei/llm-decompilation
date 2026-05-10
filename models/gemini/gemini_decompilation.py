@@ -11,8 +11,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import pickle
+import sys
+from datetime import datetime
 from multiprocessing import Pool
 
 import faulthandler
@@ -20,6 +23,7 @@ import signal
 
 from datasets import load_from_disk
 from qdrant_client import QdrantClient
+from tqdm import tqdm
 
 from config import DecompilationConfig, HOME_DIR
 from models.gemini.llm_decompiler import LLMDecompileRecord
@@ -103,23 +107,58 @@ _config: DecompilationConfig | None = None
 _rag_search: ExebenchQdrantSearch | None = None
 
 
+@contextlib.contextmanager
+def _redirect_worker_output(log_path: str):
+    """Redirect this worker's stdout/stderr file descriptors to *log_path*."""
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    stdout_fd = os.dup(1)
+    stderr_fd = os.dup(2)
+    with open(log_path, "a", buffering=1) as log_file:
+        log_file.write(f"\n===== subprocess pid={os.getpid()} start =====\n")
+        try:
+            os.dup2(log_file.fileno(), 1)
+            os.dup2(log_file.fileno(), 2)
+            yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(stdout_fd, 1)
+            os.dup2(stderr_fd, 2)
+            os.close(stdout_fd)
+            os.close(stderr_fd)
+            log_file.write(f"===== subprocess pid={os.getpid()} end =====\n")
+
+
 def _decompile_func(record, idx: int) -> LLMDecompileRecord:
     """Worker function executed in each subprocess."""
     faulthandler.register(signal.SIGUSR1)
 
-    llm_record = LLMDecompileRecord(
-        record=record,
-        idx=idx,
-        config=_config,
-        llm_client=_client,
-        model_name=_model_name,
-        rag_search=_rag_search,
-    )
-    llm_record.get_initial_prompt()
-    llm_record.decompile_and_evaluate(llm_record.initial_prompt, -1)
-    llm_record.correct_one()
-    llm_record.finalize()
-    return llm_record
+    sample_dir = os.path.join(_config.output_dir, f"sample_{idx}")
+    log_path = os.path.join(sample_dir, "subprocess.log")
+    with _redirect_worker_output(log_path):
+        logger.info("Starting decompilation worker for sample %d", idx)
+        llm_record = LLMDecompileRecord(
+            record=record,
+            idx=idx,
+            config=_config,
+            llm_client=_client,
+            model_name=_model_name,
+            rag_search=_rag_search,
+        )
+        llm_record.get_initial_prompt()
+        llm_record.decompile_and_evaluate(llm_record.initial_prompt, -1)
+        llm_record.correct_one()
+        llm_record.finalize()
+        logger.info("Finished decompilation worker for sample %d", idx)
+        return llm_record
+
+
+def _decompile_func_from_args(args) -> tuple[int, LLMDecompileRecord]:
+    """Worker wrapper for iterator-based Pool APIs."""
+    record, idx = args
+    return idx, _decompile_func(record, idx)
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +185,20 @@ def run_decompilation(
     else:
         args_list = [(record, idx) for idx, record in enumerate(dataset)]
 
+    indexed_results: list[tuple[int, LLMDecompileRecord]] = []
     with Pool(processes=config.num_processes) as pool:
-        results = pool.starmap(_decompile_func, args_list)
+        for item in tqdm(
+            pool.imap_unordered(_decompile_func_from_args, args_list),
+            total=len(args_list),
+            desc="Decompiling samples",
+            unit="sample",
+        ):
+            indexed_results.append(item)
+
+    results = [
+        result
+        for _, result in sorted(indexed_results, key=lambda item: item[0])
+    ]
 
     # Persist results.
     with open(os.path.join(output_dir, "results.pkl"), "wb") as f:
@@ -194,6 +245,7 @@ def _build_dataset_pairs(
     with_comments = "without" if remove_comments else "with"
     input_label = "ghidra-pcode" if use_pcode else "assembly"
     angr_trace_label = "angr-trace" if use_angr_trace else "no-angr-trace"
+    run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     def _output_dir(subset_label: str) -> str:
         return os.path.join(
@@ -202,7 +254,7 @@ def _build_dataset_pairs(
             "validation",
             model,
             (
-                f"{subset_label}_{model}-n{num_generate}-{input_label}"
+                f"{run_timestamp}_{subset_label}_{model}-n{num_generate}-{input_label}"
                 f"-{with_comments}-comments-{prompt_type}-similar-hermes-{angr_trace_label}"
             ),
         )

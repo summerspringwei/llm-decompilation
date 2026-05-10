@@ -40,7 +40,10 @@ from models.ghidra_decompile.ghidra_decompile_exebench import (
 )
 from models.rag.exebench_qdrant_base import ExebenchQdrantSearch
 from exebench import get_angr_traces
-from utils.evaluate_exebench import compile_llvm_ir, eval_assembly
+from utils.evaluate_exebench import (
+    compile_llvm_ir,
+    eval_assembly_with_details,
+)
 from utils.exebench_sample import ExebenchSample
 from utils.llm_response_parser import (
     extract_llvm_code_from_response,
@@ -57,6 +60,7 @@ from utils.prompt_builder import (
     build_execution_error_prompt_with_angr_trace,
     build_failure_analysis_prompt,
     build_ghidra_decompile_prompt,
+    build_llvm_syntax_repair_prompt,
     build_llm_fix_prompt,
     build_pcode_prompt,
     build_pcode_similar_record_prompt,
@@ -83,12 +87,16 @@ class EvaluationResult:
         error_msg: str,
         llvm_ir: Optional[str] = None,
         assembly: Optional[str] = None,
+        execution_details: Optional[dict] = None,
     ):
         self.compile_success = compile_success
         self.execution_success = execution_success
         self.error_msg = error_msg
         self.llvm_ir = llvm_ir
         self.assembly = assembly
+        self.execution_details = execution_details or {}
+        self.pass_count = int(self.execution_details.get("pass_count", 0) or 0)
+        self.total_count = int(self.execution_details.get("total_count", 0) or 0)
 
 
 class ResponseValidation:
@@ -463,14 +471,21 @@ class LLMDecompileRecord:
                 predict, os.path.join(sample_dir, f"{idx}"), name_hint="predict"
             )
             assembly = ""
+            execution_details = {}
             if compile_success:
                 with open(assembly_path, "r") as f:
                     assembly = f.read()
-                    execution_success = eval_assembly(
+                    execution_details = eval_assembly_with_details(
                         self.record.to_dict(), assembly
                     )
+                    execution_success = bool(execution_details["success"])
             return EvaluationResult(
-                compile_success, execution_success, error_msg, predict, assembly
+                compile_success,
+                execution_success,
+                error_msg,
+                predict,
+                assembly,
+                execution_details,
             )
 
         with ThreadPoolExecutor(
@@ -490,12 +505,14 @@ class LLMDecompileRecord:
         )
         target_assembly = ""
         target_exec_success = False
+        target_execution_details = {}
         if target_success:
             with open(target_asm_path, "r") as f:
                 target_assembly = f.read()
-                target_exec_success = eval_assembly(
+                target_execution_details = eval_assembly_with_details(
                     self.record.to_dict(), target_assembly
                 )
+                target_exec_success = bool(target_execution_details["success"])
 
         target_result = EvaluationResult(
             target_success,
@@ -503,6 +520,7 @@ class LLMDecompileRecord:
             target_error,
             self.record.llvm_ir.code[-1],
             target_assembly,
+            target_execution_details,
         )
         validation = ResponseValidation(
             prompt, response, retry_count, predict_results, target_result
@@ -518,26 +536,44 @@ class LLMDecompileRecord:
         response.raise_for_status()
         return response.json()["embeddings"]
 
-    def get_most_similar_predict(
+    def get_best_retry_candidate(
         self, retry_count: int
     ) -> EvaluationResult:
-        """Among compilable predictions, return the one most similar to the target assembly."""
+        """Return the compilable prediction with best execution behavior.
+
+        Most-passing-test-cases is a stronger signal than assembly embedding
+        similarity for semantic repair.  Similarity is kept as a tie-breaker.
+        """
         prev = self.retry_response_validation[retry_count - 1]
         target_assembly = self.record.asm.code[-1]
-        compilable = [
-            (i, r.assembly)
+        compilable_results = [
+            (i, r)
             for i, r in enumerate(prev.predict_evaluation_results_list)
             if r.compile_success
         ]
 
-        if len(compilable) == 0:
+        if len(compilable_results) == 0:
             return prev.predict_evaluation_results_list[0]
-        if len(compilable) == 1:
-            return prev.predict_evaluation_results_list[compilable[0][0]]
+        if len(compilable_results) == 1:
+            return compilable_results[0][1]
+
+        max_pass_count = max(r.pass_count for _, r in compilable_results)
+        best_by_execution = [
+            (i, r) for i, r in compilable_results if r.pass_count == max_pass_count
+        ]
+        if len(best_by_execution) == 1:
+            idx, result = best_by_execution[0]
+            logger.info(
+                "Chose candidate %d by execution behavior: passed %d/%d",
+                idx,
+                result.pass_count,
+                result.total_count,
+            )
+            return result
 
         best_idx_in_compilable = 0
         try:
-            all_texts = [target_assembly] + [c[1] for c in compilable]
+            all_texts = [target_assembly] + [r.assembly for _, r in best_by_execution]
             all_vectors = self._get_embedding(all_texts)
             query = torch.tensor(all_vectors[0], dtype=torch.float32)
             candidates = torch.tensor(
@@ -550,27 +586,37 @@ class LLMDecompileRecord:
             logger.info(
                 "Most similar index: %d out of %d",
                 best_idx_in_compilable,
-                len(compilable),
+                len(best_by_execution),
             )
         except Exception as e:
             logger.error("Error in similarity search: %s", e)
 
-        if best_idx_in_compilable >= len(compilable):
+        if best_idx_in_compilable >= len(best_by_execution):
             logger.warning(
                 "Similarity index %d out of range %d",
                 best_idx_in_compilable,
-                len(compilable),
+                len(best_by_execution),
             )
-            original_idx = compilable[0][0]
+            original_idx = best_by_execution[0][0]
+            best = best_by_execution[0][1]
         else:
-            original_idx = compilable[best_idx_in_compilable][0]
+            original_idx = best_by_execution[best_idx_in_compilable][0]
+            best = best_by_execution[best_idx_in_compilable][1]
 
         logger.info(
-            "Chose most similar index: %d from %s",
+            "Chose candidate %d from execution-tied candidates %s; passed %d/%d",
             original_idx,
-            [c[0] for c in compilable],
+            [c[0] for c in best_by_execution],
+            best.pass_count,
+            best.total_count,
         )
-        return prev.predict_evaluation_results_list[original_idx]
+        return best
+
+    def get_most_similar_predict(
+        self, retry_count: int
+    ) -> EvaluationResult:
+        """Backward-compatible alias for callers expecting the old method."""
+        return self.get_best_retry_candidate(retry_count)
 
     # -- Fix-prompt preparation ----------------------------------------------
 
@@ -600,17 +646,17 @@ class LLMDecompileRecord:
                     break
             if not predict:
                 predict = predict_list[0]
-            return build_compile_error_prompt(
+            return build_llvm_syntax_repair_prompt(
                 self.initial_prompt, predict, error_msg
             )
 
-        # At least one choice compiled — pick the most similar one.
+        # At least one choice compiled — pick by execution behavior first.
         if prev.get_num_compile_success() == 1:
             best = prev.get_first_compile_success_evaluation_result()
             logger.info("Only one choice compiled successfully")
         else:
-            best = self.get_most_similar_predict(retry_count)
-            logger.info("Using most similar compilable prediction")
+            best = self.get_best_retry_candidate(retry_count)
+            logger.info("Using best execution-behavior compilable prediction")
 
         predict_llvm_ir = best.llvm_ir
         predict_assembly = preprocessing_assembly(
@@ -635,6 +681,7 @@ class LLMDecompileRecord:
                     predict_assembly,
                     target_trace,
                     predict_trace,
+                    best.execution_details,
                 )
             if trace_link_error.strip():
                 logger.warning(
@@ -664,7 +711,10 @@ class LLMDecompileRecord:
             PromptType.SIMILAR_RECORD,
         ):
             return build_execution_error_prompt(
-                self.initial_prompt, predict_llvm_ir, predict_assembly
+                self.initial_prompt,
+                predict_llvm_ir,
+                predict_assembly,
+                best.execution_details,
             )
         elif self.prompt_type == PromptType.GHIDRA_DECOMPILE_WITH_PREDICT:
             decompiler = ghidra_decompile_record(
