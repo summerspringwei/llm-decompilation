@@ -56,6 +56,10 @@ python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_wit
 ```
 
 ```bash
+python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_164 --num_processes 64 --port 9001 --model gpt-oss-20b --embedding_url  http://localhost:8125/embed/batch --use_ghidra_loop_static_repair 2>&1 | tee -a tmp_logs/tmp_loops_static_analysis.log
+```
+
+```bash
 export CUDA_VISIBLE_DEVICES=6,7 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-120b --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2 --async-scheduling --served-model-name gpt-oss-120b
 
 python3 models/gemini/gemini_decompilation.py --port 9001 --embedding_url http://localhost:8125/embed/batch --dataset_name sampled_dataset_with_loops_164 --num_processes 64 --model gpt-oss-120b 2>&1 | tee tmp_gpt-oss-120b-sampled_dataset_with_loops_164.log

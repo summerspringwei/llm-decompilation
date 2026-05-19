@@ -76,6 +76,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use_pcode", action="store_true")
     parser.add_argument("--use_angr_trace", action="store_true")
     parser.add_argument(
+        "--use_ghidra_loop_static_repair",
+        action="store_true",
+        help="Use Ghidra CFG/loop/static assembly diffs in execution-failure retry prompts.",
+    )
+    parser.add_argument(
+        "--use_sample0_loop_guide_prompt",
+        action="store_true",
+        help="Replace retrieved RAG example with analysis/sample0_loop_decompilation_guide.md.",
+    )
+    parser.add_argument(
+        "--sample0_loop_guide_path",
+        type=str,
+        default="",
+        help="Markdown guide path used with --use_sample0_loop_guide_prompt.",
+    )
+    parser.add_argument(
         "--sample_indices",
         type=str,
         default="",
@@ -240,11 +256,13 @@ def _build_dataset_pairs(
     remove_comments: bool,
     prompt_type: PromptType,
     use_angr_trace: bool,
+    use_sample0_loop_guide_prompt: bool,
 ) -> dict[str, tuple[str, str]]:
     """Return ``{dataset_name: (dataset_path, output_dir)}``."""
     with_comments = "without" if remove_comments else "with"
     input_label = "ghidra-pcode" if use_pcode else "assembly"
     angr_trace_label = "angr-trace" if use_angr_trace else "no-angr-trace"
+    guide_label = "-sample0-guide" if use_sample0_loop_guide_prompt else ""
     run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     def _output_dir(subset_label: str) -> str:
@@ -256,6 +274,7 @@ def _build_dataset_pairs(
             (
                 f"{run_timestamp}_{subset_label}_{model}-n{num_generate}-{input_label}"
                 f"-{with_comments}-comments-{prompt_type}-similar-hermes-{angr_trace_label}"
+                f"{guide_label}"
             ),
         )
 
@@ -319,6 +338,7 @@ def main() -> None:
         remove_comments=config.remove_comments,
         prompt_type=prompt_type,
         use_angr_trace=config.use_angr_trace,
+        use_sample0_loop_guide_prompt=config.use_sample0_loop_guide_prompt,
     )
     if config.dataset_name not in dataset_pairs:
         raise ValueError(

@@ -19,6 +19,7 @@ from utils.prompt_templates import (
     GHIDRA_PCODE_SIMILAR_RECORD_PROMPT,
     LLVM_SYNTAX_REPAIR_TEMPLATE,
     LLM_FIX_PROMPT,
+    SAMPLE0_LOOP_GUIDE_PROMPT,
     SIMILAR_RECORD_PROMPT,
     TEST_ERROR_TEMPLATE,
     TEST_ERROR_TEMPLATE_WITH_ANGR_DEBUG_TRACE,
@@ -51,6 +52,17 @@ def build_similar_record_prompt(
         asm_code=asm_code,
         similar_asm_code=similar_asm_code,
         similar_llvm_ir=similar_llvm_ir,
+    )
+
+
+def build_sample0_loop_guide_prompt(
+    asm_code: str,
+    guide_text: str,
+) -> str:
+    """Build a loop decompilation prompt using the sample 0 worked guide."""
+    return SAMPLE0_LOOP_GUIDE_PROMPT.format(
+        asm_code=asm_code,
+        guide_text=guide_text,
     )
 
 

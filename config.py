@@ -12,6 +12,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 HOME_DIR = os.path.expanduser("~")
+DEFAULT_SAMPLE0_LOOP_GUIDE_PATH = os.path.join(
+    HOME_DIR,
+    "Projects",
+    "llm-decompilation",
+    "analysis",
+    "sample0_loop_decompilation_guide.md",
+)
 
 
 @dataclass
@@ -91,6 +98,11 @@ class DecompilationConfig:
     remove_comments: bool = True
     use_pcode: bool = False
     use_angr_trace: bool = False
+    use_ghidra_loop_static_repair: bool = False
+    use_sample0_loop_guide_prompt: bool = False
+    sample0_loop_guide_path: str = field(
+        default_factory=lambda: DEFAULT_SAMPLE0_LOOP_GUIDE_PATH
+    )
 
     # Dataset
     dataset_name: str = "sampled_dataset_with_loops_and_only_one_bb_164"
@@ -133,6 +145,22 @@ class DecompilationConfig:
             remove_comments=getattr(args, "remove_comments", cls.remove_comments),
             use_pcode=getattr(args, "use_pcode", cls.use_pcode),
             use_angr_trace=getattr(args, "use_angr_trace", cls.use_angr_trace),
+            use_ghidra_loop_static_repair=getattr(
+                args,
+                "use_ghidra_loop_static_repair",
+                cls.use_ghidra_loop_static_repair,
+            ),
+            use_sample0_loop_guide_prompt=getattr(
+                args,
+                "use_sample0_loop_guide_prompt",
+                cls.use_sample0_loop_guide_prompt,
+            ),
+            sample0_loop_guide_path=getattr(
+                args,
+                "sample0_loop_guide_path",
+                DEFAULT_SAMPLE0_LOOP_GUIDE_PATH,
+            )
+            or DEFAULT_SAMPLE0_LOOP_GUIDE_PATH,
             dataset_name=getattr(args, "dataset_name", cls.dataset_name),
             rag=rag,
         )

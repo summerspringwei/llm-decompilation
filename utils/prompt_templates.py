@@ -44,6 +44,33 @@ Please decompile the following assembly code to LLVM IR.
 ```
 """
 
+SAMPLE0_LOOP_GUIDE_PROMPT = """
+Please decompile the assembly code to LLVM IR.
+
+Use the following worked example and procedure as the primary guide. It shows how
+to reason from loop assembly to valid LLVM IR, including globals, struct layout,
+loop induction variables, signed/unsigned conditions, memory side effects, and
+verification.
+
+```markdown
+{guide_text}
+```
+
+Now apply the same step-by-step method to the following assembly code.
+
+Rules:
+- First infer globals, external calls, struct layouts, loop bounds, loop-carried values, and memory side effects.
+- Then generate valid LLVM IR in Static Single Assignment form.
+- Declare global variables and external functions; do not define globals.
+- Preserve signed vs unsigned branch semantics from the assembly mnemonics.
+- Make sure every PHI node has one incoming value for each predecessor.
+- Place the final generated LLVM IR code between ```llvm and ```.
+
+```assembly
+{asm_code}
+```
+"""
+
 GHIDRA_PCODE_SIMILAR_RECORD_PROMPT = """
 Please decompile the Ghidra decompiled high level P-code to LLVM IR.
 Here is a example of the similar Ghidra decompiled high level P-code and the corresponding decompiled LLVM IR: 

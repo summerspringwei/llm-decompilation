@@ -23,6 +23,7 @@ import os
 import pickle
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional
 
 import faulthandler
@@ -64,6 +65,7 @@ from utils.prompt_builder import (
     build_llm_fix_prompt,
     build_pcode_prompt,
     build_pcode_similar_record_prompt,
+    build_sample0_loop_guide_prompt,
     build_similar_record_prompt,
 )
 from utils.prompt_type import PromptType
@@ -308,6 +310,15 @@ class LLMDecompileRecord:
         return build_basic_prompt(asm_code)
 
     def _prepare_prompt_from_similar_record(self) -> str:
+        if self.config.use_sample0_loop_guide_prompt:
+            asm_code = preprocessing_assembly(
+                self.record.asm.code[-1],
+                remove_comments=self.config.remove_comments,
+            )
+            guide_path = Path(self.config.sample0_loop_guide_path)
+            guide_text = guide_path.read_text()
+            return build_sample0_loop_guide_prompt(asm_code, guide_text)
+
         similar_record, self.score = (
             self.exebench_qdrant_search.find_similar_records_in_exebench_synth_rich_io(
                 self.record.to_dict()
@@ -620,6 +631,131 @@ class LLMDecompileRecord:
 
     # -- Fix-prompt preparation ----------------------------------------------
 
+    def prepare_ghidra_loop_static_repair_prompt(
+        self,
+        best: EvaluationResult,
+        retry_count: int,
+    ) -> Optional[str]:
+        """Build a loop-aware static repair prompt from Ghidra CFG extraction."""
+        try:
+            from analysis.ghidra_loop_static_repair import (
+                compare_features,
+                ensure_object_from_ir,
+                extract_cfg_with_ghidra,
+                extract_function_cfg,
+                format_loop_summary,
+                format_semantic_summary,
+                semantic_features,
+            )
+        except Exception as e:
+            logger.warning("Could not import Ghidra static repair helpers: %s", e)
+            return None
+
+        sample_out = Path(self.config.output_dir) / f"sample_{self.idx}" / (
+            f"ghidra_loop_static_retry_{retry_count}"
+        )
+        sample_out.mkdir(parents=True, exist_ok=True)
+
+        target_result = self.retry_response_validation[retry_count - 1].target_evaluation_result
+        target_obj = ensure_object_from_ir(
+            target_result.llvm_ir or self.record.llvm_ir.code[-1],
+            sample_out / "target",
+            "target",
+        )
+        predict_obj = ensure_object_from_ir(
+            best.llvm_ir or "",
+            sample_out / "predict",
+            "predict",
+        )
+        if not target_obj or not predict_obj:
+            logger.warning(
+                "Could not compile target/prediction objects for Ghidra static repair, index %d",
+                self.idx,
+            )
+            return None
+
+        func_name = self.record.fname or self.record.func_info.functions[0]["name"]
+        timeout = getattr(self.config.ghidra, "command_timeout", 90)
+        target_cfg_json = extract_cfg_with_ghidra(
+            target_obj,
+            func_name,
+            sample_out / "target_cfg.json",
+            timeout,
+        )
+        predict_cfg_json = extract_cfg_with_ghidra(
+            predict_obj,
+            func_name,
+            sample_out / "predict_cfg.json",
+            timeout,
+        )
+        if not target_cfg_json or not predict_cfg_json:
+            logger.warning(
+                "Could not extract target/prediction CFGs for Ghidra static repair, index %d",
+                self.idx,
+            )
+            return None
+
+        target_cfg = extract_function_cfg(target_cfg_json)
+        predict_cfg = extract_function_cfg(predict_cfg_json)
+        if not target_cfg or not predict_cfg:
+            logger.warning(
+                "Could not locate function CFG in Ghidra static repair JSON, index %d",
+                self.idx,
+            )
+            return None
+
+        target_features = semantic_features(target_cfg)
+        predict_features = semantic_features(predict_cfg)
+        findings = compare_features(target_features, predict_features)
+        analysis_text = "\n\n".join(
+            [
+                f"sample index: {self.idx}",
+                f"function: {func_name}",
+                f"path: {self.record.path}",
+                f"prediction used: retry {retry_count - 1}",
+                "Layer 1: CFG and loop summary",
+                format_loop_summary("Target", target_cfg),
+                format_loop_summary("Prediction", predict_cfg),
+                "Layer 2: semantic instruction-pattern summary",
+                format_semantic_summary("Target", target_features),
+                format_semantic_summary("Prediction", predict_features),
+                "Layer 3: target-vs-prediction feature differences",
+                "\n".join(f"- {finding}" for finding in findings),
+                "Repair guidance",
+                "- If loop counts differ, fix the loop condition or induction update.",
+                "- If memory widths/scales differ, fix load/store type or getelementptr stride.",
+                "- If compare/branch patterns differ, fix signedness and exit condition.",
+                "- If calls differ, preserve external helper calls and their argument order.",
+            ]
+        )
+        (sample_out / "analysis.txt").write_text(analysis_text)
+
+        prompt = f"""{self.initial_prompt}
+
+The previous LLVM IR compiles but does not match the target behavior for a function with loops.
+
+Previous LLVM IR:
+```llvm
+{best.llvm_ir or ""}
+```
+
+Predicted assembly:
+```assembly
+{best.assembly or ""}
+```
+
+Static Ghidra-based loop analysis:
+```text
+{analysis_text}
+```
+
+Use the analysis to repair the LLVM IR. Focus on loop bounds, induction variable updates,
+branch conditions, memory access width/stride, calls, and loop-carried stores.
+Return only the corrected LLVM IR between ```llvm and ```.
+"""
+        (sample_out / "repair_prompt.txt").write_text(prompt)
+        return prompt
+
     def prepare_compile_fix_prompt(self, retry_count: int) -> str:
         """Build a fix prompt for the given retry round."""
         sample_dir = os.path.join(
@@ -663,7 +799,11 @@ class LLMDecompileRecord:
             best.assembly, remove_comments=self.config.remove_comments
         )
 
-        if self.config.use_angr_trace and not best.execution_success:
+        if (
+            self.config.use_angr_trace
+            and not self.config.use_ghidra_loop_static_repair
+            and not best.execution_success
+        ):
             target_assembly_for_trace = (
                 getattr(prev.target_evaluation_result, "assembly", None)
                 or self.record.asm.code[-1]
@@ -702,6 +842,16 @@ class LLMDecompileRecord:
                 )
             logger.warning(
                 "angr trace unavailable for index %d retry %d; using execution-error prompt",
+                self.idx,
+                retry_count,
+            )
+
+        if self.config.use_ghidra_loop_static_repair and not best.execution_success:
+            prompt = self.prepare_ghidra_loop_static_repair_prompt(best, retry_count)
+            if prompt:
+                return prompt
+            logger.warning(
+                "Ghidra loop static repair unavailable for index %d retry %d; using execution-error prompt",
                 self.idx,
                 retry_count,
             )
