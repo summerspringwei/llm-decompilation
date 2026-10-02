@@ -216,3 +216,6 @@ tmp.*
 *.json
 tmp_*
 models/gemini/analyze_cfg_exebench.ipynb
+third_party/
+validation/
+models/binary_decompilation/examples/

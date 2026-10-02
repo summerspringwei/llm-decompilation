@@ -16,7 +16,7 @@ class Qwen3Embedding():
 
         model = LLM(
             model=model_path,
-            task="embed",
+            runner="pooling",
             gpu_memory_utilization=0.95,
             max_model_len=32000,
             enforce_eager=True
@@ -33,6 +33,5 @@ class Qwen3Embedding():
             batch_texts = texts[i:i+batch_size]
             batch_embeddings = self.model.embed(
                 batch_texts)
-            embeddings.extend(batch_embeddings)
+            embeddings.extend(output.outputs.embedding for output in batch_embeddings)
         return embeddings
-

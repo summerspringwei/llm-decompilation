@@ -43,6 +43,20 @@ python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_wit
 export CUDA_VISIBLE_DEVICES=7 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-20b --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 1 --served-model-name gpt-oss-20b
 ```
 
+```
+export CUDA_VISIBLE_DEVICES=6 && vllm serve /home/xiachunwei/Datasets/Models/Qwen3.8-27B-FP8 --port 9001 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 1 --served-model-name Qwen3.8-27B-FP8
+
+CUDA_VISIBLE_DEVICES=6 vllm serve \
+  /home/xiachunwei/Datasets/Models/Qwen3.8-27B-FP8 \
+  --port 9001 \
+  --api-key  token-llm4decompilation-abc123\
+  --served-model-name Qwen3.8-27B-FP8 \
+  --language-model-only \
+  --max-model-len 32000 \
+  --max-num-seqs 32 \
+  --enforce-eager
+```
+
 ```bash
 export CUDA_VISIBLE_DEVICES=4,5 && vllm serve /data1/xiachunwei/Datasets/Models/gpt-oss-120b --port 9002 --api-key token-llm4decompilation-abc123 --tensor-parallel-size 2  --async-scheduling --served-model-name gpt-oss-120b 
 ```
@@ -52,7 +66,7 @@ python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_wit
 
 Run with angr runtime trace debugging
 ```bash
-python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 1 --port 9001 --model gpt-oss-20b --embedding_url  http://localhost:8125/embed/batch --use_angr_trace 
+python3 models/gemini/gemini_decompilation.py --dataset_name sampled_dataset_with_loops_and_only_one_bb_164 --num_processes 1 --port 9001 --model gpt-oss-20b --embedding_url  http://localhost:8125/embed/batch --use_angr_trace
 ```
 
 ```bash
@@ -70,7 +84,7 @@ For RAG functionality, ensure Qdrant is running:
 
 ```shell
 # Start Qdrant server
-cd path/to/qdrant
+cd $HOME$/Software/qdrant/
 ./target/release/qdrant
 ```
 
@@ -99,7 +113,8 @@ vllm serve /data1/xiachunwei/Datasets/Models/Qwen3-Embedding-8B --task embed --s
 
 Or use HermesSim as the embedding model:
 ```bash
-cd ~/Projects/HermesSim
+conda activate hermessim
+cd $HOME/Projects/HermesSim
 python3 e2e/hermessim_embedding_service.py
 ```
 

@@ -59,6 +59,19 @@ def create_llm_client(
         )
         return client, "ep-20250317013717-m9ksl"
 
+    if model == "deepseek-v4-flash-ga-260731":
+        api_key = os.environ.get("ARK_STREAM_API_KEY", "")
+        if not api_key:
+            raise ValueError(
+                "ARK_STREAM_API_KEY must be set for the Volcengine Ark model"
+            )
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            timeout=1800,
+        )
+        return client, model
+
     if model == "OpenAI-GPT-4.1":
         client = OpenAI(
             api_key=os.environ.get("OPENAI_API_KEY", ""),
@@ -67,5 +80,14 @@ def create_llm_client(
 
     raise ValueError(
         f"Unknown model '{model}'. Known models: "
-        f"{sorted(_LOCAL_MODELS | {'Huoshan-DeepSeek-R1', 'OpenAI-GPT-4.1'})}"
+        + str(
+            sorted(
+                _LOCAL_MODELS
+                | {
+                    "Huoshan-DeepSeek-R1",
+                    "OpenAI-GPT-4.1",
+                    "deepseek-v4-flash-ga-260731",
+                }
+            )
+        )
     )

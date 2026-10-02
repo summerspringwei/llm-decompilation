@@ -210,8 +210,18 @@ class LLMDecompileRecord:
     ) -> ChatCompletion:
         """Load a cached response or call the LLM and persist the result."""
         if os.path.exists(response_path):
-            with open(response_path, "rb") as f:
-                return pickle.load(f)
+            try:
+                with open(response_path, "rb") as f:
+                    return pickle.load(f)
+            except (EOFError, OSError, pickle.UnpicklingError) as error:
+                # A disk-full interruption can leave an empty or partial cache
+                # file. Treat it as a miss rather than aborting the full run.
+                logger.warning(
+                    "Ignoring unreadable cached response %s: %s",
+                    response_path,
+                    error,
+                )
+                os.unlink(response_path)
 
         response = self.llm_client.chat.completions.create(
             model=self.model_name,

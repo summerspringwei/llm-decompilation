@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import pickle
 import sys
+import traceback
 from datetime import datetime
 from multiprocessing import Pool
+from pathlib import Path
 
 import faulthandler
 import signal
@@ -72,6 +75,12 @@ def parse_args() -> argparse.Namespace:
         default="train_synth_rich_io_filtered_{idx}_preprocessed_hermessim",
     )
     parser.add_argument("--num_generate", type=int, default=8)
+    parser.add_argument(
+        "--num_retry",
+        type=int,
+        default=10,
+        help="Maximum corrective LLM iterations after the initial generation.",
+    )
     parser.add_argument("--num_processes", type=int, default=1)
     parser.add_argument("--use_pcode", action="store_true")
     parser.add_argument("--use_angr_trace", action="store_true")
@@ -108,6 +117,15 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Override the validation output directory.",
+    )
+    parser.add_argument(
+        "--resume-incomplete",
+        action="store_true",
+        help=(
+            "Run only samples without an initial cached response, or samples "
+            "whose cached retries have not reached --num_retry. Requires "
+            "--output_dir and preserves completed samples."
+        ),
     )
     return parser.parse_args()
 
@@ -171,10 +189,17 @@ def _decompile_func(record, idx: int) -> LLMDecompileRecord:
         return llm_record
 
 
-def _decompile_func_from_args(args) -> tuple[int, LLMDecompileRecord]:
+def _decompile_func_from_args(args) -> tuple[int, LLMDecompileRecord | None]:
     """Worker wrapper for iterator-based Pool APIs."""
     record, idx = args
-    return idx, _decompile_func(record, idx)
+    try:
+        return idx, _decompile_func(record, idx)
+    except Exception:
+        sample_dir = os.path.join(_config.output_dir, f"sample_{idx}")
+        os.makedirs(sample_dir, exist_ok=True)
+        with open(os.path.join(sample_dir, "worker_failure.log"), "a") as f:
+            f.write(traceback.format_exc())
+        return idx, None
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +234,11 @@ def run_decompilation(
             desc="Decompiling samples",
             unit="sample",
         ):
-            indexed_results.append(item)
+            idx, result = item
+            if result is None:
+                logger.error("Sample %d failed; see its worker_failure.log", idx)
+                continue
+            indexed_results.append((idx, result))
 
     results = [
         result
@@ -241,6 +270,30 @@ def run_decompilation(
     logger.info("target_execution_success: %d", tgt_exec)
 
     return results
+
+
+def incomplete_sample_indices(output_dir: str, dataset_size: int, num_retry: int) -> list[int]:
+    """Return samples that still need model work in an interrupted run.
+
+    A sample is complete when it has a successful ``correct_llvm_ir.ll`` or
+    when its cached initial response plus all permitted retries exist. This
+    avoids both duplicate initial calls and recharging known final failures.
+    """
+    root = Path(output_dir)
+    pending = []
+    for idx in range(dataset_size):
+        sample_dir = root / f"sample_{idx}"
+        initial = root / f"response_{idx}.pkl"
+        retry_count = sum(
+            (root / f"response_{idx}_retry_{retry}.pkl").exists()
+            for retry in range(num_retry)
+        )
+        complete = (sample_dir / "correct_llvm_ir.ll").exists() or (
+            initial.exists() and retry_count >= num_retry
+        )
+        if not complete:
+            pending.append(idx)
+    return pending
 
 
 # ---------------------------------------------------------------------------
@@ -316,20 +369,6 @@ def main() -> None:
     config = DecompilationConfig.from_args(args)
     prompt_type = PromptType(config.prompt_type)
 
-    # Build client.
-    _client, _model_name = create_llm_client(config)
-
-    # Build RAG search.
-    qdrant_client = QdrantClient(
-        host=config.rag.qdrant_host, port=config.rag.qdrant_port
-    )
-    _rag_search = ExebenchQdrantSearch(
-        config.rag.dataset_dir,
-        qdrant_client,
-        config.rag.embedding_url,
-        config.rag.collection_name_template,
-    )
-
     # Resolve dataset.
     dataset_pairs = _build_dataset_pairs(
         model=config.model_name,
@@ -352,6 +391,57 @@ def main() -> None:
     config.output_dir = output_dir
     _config = config
 
+    # Keep an explicit, secret-free record of the experiment inputs.  API keys
+    # are intentionally never serialized.
+    run_config = {
+        "dataset_name": config.dataset_name,
+        "dataset_path": dataset_path,
+        "model": config.model_name,
+        "provider": (
+            "volcengine-ark"
+            if config.model_name == "deepseek-v4-flash-ga-260731"
+            else "openai-compatible"
+        ),
+        "base_url": (
+            "https://ark.cn-beijing.volces.com/api/v3"
+            if config.model_name == "deepseek-v4-flash-ga-260731"
+            else f"http://{config.host}:{config.port}/v1"
+        ),
+        "api_key_environment_variable": (
+            "ARK_STREAM_API_KEY"
+            if config.model_name == "deepseek-v4-flash-ga-260731"
+            else "LLM_API_KEY"
+        ),
+        "num_generate": config.num_generate,
+        "num_retry": config.num_retry,
+        "max_model_calls_per_sample": 1 + config.num_retry,
+        "num_processes": config.num_processes,
+        "prompt_type": config.prompt_type,
+        "remove_comments": config.remove_comments,
+        "use_pcode": config.use_pcode,
+        "use_angr_trace": config.use_angr_trace,
+        "qdrant_host": config.rag.qdrant_host,
+        "qdrant_port": config.rag.qdrant_port,
+        "embedding_url": config.rag.embedding_url,
+        "collection_name_template": config.rag.collection_name_template,
+        "resume_incomplete": args.resume_incomplete,
+    }
+    with open(os.path.join(output_dir, "run_config.json"), "w") as f:
+        json.dump(run_config, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+    # Build remote clients only after the configuration has been persisted.
+    _client, _model_name = create_llm_client(config)
+    qdrant_client = QdrantClient(
+        host=config.rag.qdrant_host, port=config.rag.qdrant_port
+    )
+    _rag_search = ExebenchQdrantSearch(
+        config.rag.dataset_dir,
+        qdrant_client,
+        config.rag.embedding_url,
+        config.rag.collection_name_template,
+    )
+
     dataset = load_from_disk(dataset_path)
     sample_indices = []
     if args.sample_indices.strip():
@@ -360,6 +450,32 @@ def main() -> None:
             for idx in args.sample_indices.split(",")
             if idx.strip()
         ]
+    if args.resume_incomplete:
+        if not args.output_dir:
+            raise ValueError("--resume-incomplete requires --output_dir")
+        if sample_indices:
+            raise ValueError(
+                "Use either --sample_indices or --resume-incomplete, not both"
+            )
+        sample_indices = incomplete_sample_indices(
+            output_dir, len(dataset), config.num_retry
+        )
+        with open(os.path.join(output_dir, "resume_selection.json"), "w") as f:
+            json.dump(
+                {
+                    "dataset_size": len(dataset),
+                    "num_retry": config.num_retry,
+                    "scheduled_indices": sample_indices,
+                },
+                f,
+                indent=2,
+            )
+            f.write("\n")
+        logger.info(
+            "Resuming %d incomplete samples: %s",
+            len(sample_indices),
+            sample_indices,
+        )
     run_decompilation(
         dataset,
         config,
