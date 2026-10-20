@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 from models.binary_decompilation.project_pipeline import CoreutilsAdapter, run
 from models.binary_decompilation.standalone_recovery import (
     binary_data_evidence, build_generated_project, generated_includes_only, support_dependencies,
+    recover_standalone,
 )
 
 
@@ -104,6 +106,54 @@ class StandaloneTests(unittest.TestCase):
         offset = next(obj for obj in evidence["objects"] if obj["name"] == "offset")
         self.assertEqual(offset["initial_bytes_hex"], "03000000")
         self.assertNotIn("c_type", offset)
+
+    def integration_inputs(self):
+        self.config["max_attempts"] = 1
+        results = [{"name": f["name"], "signature": {"signature": "int " + f["name"] + "();"},
+                    "ir": {"accepted": True, "candidate": f["ir_candidate"]},
+                    "c": {"accepted": True, "candidate": f["c_candidate"]}} for f in self.functions]
+        plan = {"targets": [{"name": f["name"]} for f in self.functions], "binary_data": {"objects": []}}
+        return plan, results
+
+    def test_integration_revalidation_keeps_assisted_replacements(self):
+        plan, results = self.integration_inputs()
+        glue = {"project_header": self.header, "globals_c": self.globals,
+                "function_replacements": {"transform": "int transform(int x) { return offset + x; }"}}
+        response = {"choices": [{"message": {"content": json.dumps(glue)}, "finish_reason": "stop"}]}
+        directory = self.root / "integration"
+        with patch("models.binary_decompilation.standalone_recovery.fit_prompt", return_value=("fixture", {})), \
+             patch("models.binary_decompilation.standalone_recovery.generate", return_value=response):
+            first = recover_standalone(Mock(), self.config, self.adapter, plan, results, directory)
+        self.assertTrue(first["accepted"], first)
+        revised = next(f for f in first["generated_functions"] if f["name"] == "transform")["c_candidate"]
+        self.assertNotEqual(revised, self.functions[0]["c_candidate"])
+        with patch("models.binary_decompilation.standalone_recovery.generate", side_effect=AssertionError("No new request")):
+            cached = recover_standalone(Mock(), self.config, self.adapter, plan, results, directory)
+        self.assertTrue(cached["accepted"], cached)
+        paths = [p["path"] for p in cached["validation"]["c"]["provenance"]["generated_inputs"]]
+        self.assertIn(revised, paths)
+
+    def test_incomplete_integration_response_never_builds(self):
+        plan, results = self.integration_inputs()
+        response = {"choices": [{"message": {"content": json.dumps({"project_header": self.header,
+                    "globals_c": self.globals, "function_replacements": {}})}, "finish_reason": "length"}]}
+        with patch("models.binary_decompilation.standalone_recovery.fit_prompt", return_value=("fixture", {})), \
+             patch("models.binary_decompilation.standalone_recovery.generate", return_value=response), \
+             patch("models.binary_decompilation.standalone_recovery.build_generated_project") as builder:
+            result = recover_standalone(Mock(), self.config, self.adapter, plan, results, self.root / "incomplete")
+        self.assertFalse(result["accepted"], result)
+        builder.assert_not_called()
+
+    def test_integration_uses_effective_completion_budget(self):
+        plan, results = self.integration_inputs()
+        self.config.update(max_tokens=260000, max_tokens_policy="remaining_context")
+        response = {"choices": [{"message": {"content": "unfinished"}, "finish_reason": "length"}]}
+        with patch("models.binary_decompilation.standalone_recovery.fit_prompt",
+                   return_value=("fixture", {"max_output_tokens": 242527})), \
+             patch("models.binary_decompilation.standalone_recovery.generate", return_value=response) as generate:
+            recover_standalone(Mock(), self.config, self.adapter, plan, results, self.root / "budget")
+        self.assertEqual(generate.call_args.args[1]["max_tokens"], 242527)
+        self.assertEqual(generate.call_args.args[1]["requested_max_tokens"], 260000)
 
 
 if __name__ == "__main__":

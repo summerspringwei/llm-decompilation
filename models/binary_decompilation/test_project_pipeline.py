@@ -76,6 +76,26 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "inputs changed"):
                 infer_stage(client, {**config, "model": "different"}, adapter, function, {}, "signature", root)
 
+    def test_rejected_cached_contract_uses_remaining_budget(self):
+        client, adapter = Mock(), Mock()
+        contract = {"c_declaration": "int leaf(void);"}
+        client.chat.completions.create.return_value.model_dump.return_value = {
+            "choices": [{"message": {"content": json.dumps(contract)}}]}
+        adapter.validate.return_value = {"accepted": True, "feedback": "ok"}
+        config = {"model": "fixture", "max_attempts": 2, "max_tokens": 64}
+        function = {"name": "leaf", "assembly": "ret", "signature": "int leaf(void)",
+                    "calls": [], "source_file": "src/fixture.c"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            infer_stage(client, config, adapter, function, {}, "signature", root)
+            adapter.validate.side_effect = [ValueError("Invalid cached probe"),
+                {"accepted": False, "feedback": "Invalid cached probe"}, {"accepted": True, "feedback": "ok"}]
+            result = infer_stage(client, config, adapter, function, {}, "signature", root)
+            self.assertTrue(result["accepted"], result)
+            self.assertEqual(result["attempts"], 2)
+            self.assertEqual(client.chat.completions.create.call_count, 2)
+            self.assertEqual(len(list(root.glob("attempt_*/request.json"))), 2)
+
     def test_prompt_budget_drops_examples_not_target_evidence(self):
         class Tokenizer:
             def apply_chat_template(self, messages, **kwargs):

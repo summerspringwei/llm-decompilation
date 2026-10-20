@@ -1,0 +1,35 @@
+{
+  "extends": "coreutils_qwen38_remote.json",
+  "output_dir": "/data1/xiachunwei/Projects/llm-decompilation/validation/project_level_binary_v2",
+  "analysis_cache": "/data1/xiachunwei/Projects/llm-decompilation/validation/project_level_qwen38",
+  "context_window": 262144,
+  "max_tokens": 16384,
+  "stream": true,
+  "request_timeout": 3600,
+  "repetition_penalty": 1.05,
+  "stagnation_limit": 3,
+  "validation_mode": "binary_only",
+  "retrieval": {
+    "embedding_url": "http://127.0.0.1:8125/embed/batch",
+    "qdrant_url": "http://127.0.0.1:6333",
+    "collection_template": "train_synth_rich_io_filtered_{idx}_preprocessed_hermessim",
+    "expected_dimension": 384,
+    "verify_dimensions": true
+  },
+  "program_overrides": {
+    "df": {
+      "ownership_units": ["src/find-mount-point.c"],
+      "additional_cases": [
+        {"args": ["--output=source,target"]},
+        {"args": ["--output=source,target", "."]},
+        {"args": ["--output=source,target", "/tmp"]},
+        {"args": ["--output=source,target", "/"], "tty": true},
+        {"args": ["--help"], "tty": true}
+      ],
+      "instrumentation_excluded_tests": {
+        "tests/df/no-mtab-status-masked-proc.sh": "The test masks /proc, preventing external Frida attachment; retain it in standalone evaluation."
+      },
+      "standalone": {"support_objects": ["src/libver.a", "lib/libcoreutils.a"]}
+    }
+  }
+}

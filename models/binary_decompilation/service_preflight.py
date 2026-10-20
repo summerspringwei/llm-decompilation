@@ -25,7 +25,7 @@ def check_services(client, config: dict) -> dict:
                      "hermessim": config["retrieval"]["embedding_url"].rsplit("/embed/", 1)[0] + "/health"}
         for name, endpoint in endpoints.items():
             try:
-                response = requests.get(endpoint, timeout=10)
+                response = requests.get(endpoint, timeout=config.get("service_health_timeout", 10))
                 response.raise_for_status()
                 if name == "hermessim" and response.json().get("model_loaded") is not True:
                     raise ValueError("HermesSim reports that its embedding model is not loaded")
@@ -33,6 +33,30 @@ def check_services(client, config: dict) -> dict:
             except Exception as error:
                 checks[name] = {"ok": False, "endpoint": endpoint,
                                 "error_type": type(error).__name__, "error": str(error)}
+        if config["retrieval"].get("verify_dimensions"):
+            try:
+                settings = config["retrieval"]
+                response = requests.post(settings["embedding_url"],
+                                         json=[".text\n.globl probe\nprobe:\n ret\n"], timeout=60)
+                response.raise_for_status()
+                embedding = response.json()
+                if embedding.get("success_indices") != [0]:
+                    raise ValueError("HermesSim dimension probe failed")
+                dimension = len(embedding["embeddings"][0])
+                if dimension != settings["expected_dimension"]:
+                    raise ValueError("HermesSim embedding dimension differs from configuration")
+                collections = []
+                for index in range(8):
+                    collection = settings["collection_template"].format(idx=index)
+                    response = requests.get(settings["qdrant_url"].rstrip("/") + "/collections/" + collection, timeout=10)
+                    response.raise_for_status()
+                    params = response.json()["result"]["config"]["params"]["vectors"]
+                    if params.get("size") != dimension:
+                        raise ValueError(collection + ": vector dimensions do not match HermesSim")
+                    collections.append({"name": collection, "vectors": params})
+                checks["retrieval_dimensions"] = {"ok": True, "dimension": dimension, "collections": collections}
+            except Exception as error:
+                checks["retrieval_dimensions"] = {"ok": False, "error": str(error)}
     try:
         probe = run(["gdb", "--batch", "-ex", "run", "--args", "/bin/true"], timeout=30)
         checks["runtime_tracing"] = {"ok": probe["returncode"] == 0, "probe": probe}

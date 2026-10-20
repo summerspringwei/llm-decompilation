@@ -1,0 +1,26 @@
+{
+  "extends": "coreutils_binary_first.json",
+  "output_dir": "/data1/xiachunwei/Projects/llm-decompilation/validation/project_level_binary_v3_candidates8",
+  "evidence_cache": "/data1/xiachunwei/Projects/llm-decompilation/validation/project_level_binary_v2",
+  "context_window": 260000,
+  "num_generate": 8,
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "enable_thinking": true,
+  "stage_enable_thinking": {"signature": false, "probes": false},
+  "ir_only_c_evidence": true,
+  "max_tokens": 260000,
+  "max_tokens_policy": "remaining_context",
+  "stage_max_tokens": {},
+  "stage_num_generate": {"integration": 1},
+  "max_probe_attempts": 3,
+  "retrieval": {
+    "embedding_url": "http://127.0.0.1:8125/embed/batch",
+    "qdrant_url": "http://127.0.0.1:6333",
+    "collection_template": "train_synth_rich_io_filtered_{idx}_preprocessed_hermessim",
+    "expected_dimension": 384,
+    "verify_dimensions": true,
+    "min_score": 0.7,
+    "max_examples": 2
+  }
+}

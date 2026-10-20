@@ -11,8 +11,8 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 
 from models.binary_decompilation.export_source_references import find_definition_span
-from models.binary_decompilation.project_pipeline import code_block, compiler_feedback, run, write_json
-from models.binary_decompilation.prompt_budget import fit_prompt
+from models.binary_decompilation.project_pipeline import code_block, compiler_feedback, generate, run, write_json
+from models.binary_decompilation.prompt_budget import fit_prompt, with_output_budget
 
 
 def binary_data_evidence(binary: Path, ownership_object: Path, targets: list[dict]) -> dict:
@@ -207,7 +207,7 @@ def build_generated_project(adapter, functions: list[dict], header: str, globals
     write_json(directory / "link.json", linked)
     if linked["returncode"]:
         return {"accepted": False, "feedback": linked["stderr"][-12000:], "provenance": provenance}
-    tests = adapter.test(executable, directory)
+    tests = getattr(adapter, "feedback_test", adapter.test)(executable, directory)
     write_json(directory / "tests.json", tests)
     return {"accepted": tests["failed"] == 0 and tests["passed"] > 0,
             "feedback": json.dumps([t for t in tests["tests"] if t["returncode"] not in (0, 77)])[-12000:],
@@ -216,6 +216,8 @@ def build_generated_project(adapter, functions: list[dict], header: str, globals
 
 
 def recover_standalone(client, config: dict, adapter, plan: dict, results: list[dict], directory: Path) -> dict:
+    from models.binary_decompilation.project_pipeline import generation_config, generation_metadata
+    config = generation_config(config, "integration")
     directory.mkdir(parents=True, exist_ok=True)
     required = {f["name"] for f in plan["targets"]}
     complete = {r["name"] for r in results if r.get("ir", {}).get("accepted") and r.get("c", {}).get("accepted")}
@@ -225,13 +227,42 @@ def recover_standalone(client, config: dict, adapter, plan: dict, results: list[
         write_json(directory / "result.json", result)
         return result
     final_path = directory / "result.json"
+    identity = {"binary_sha256": hashlib.sha256(adapter.binary.read_bytes()).hexdigest(),
+                "functions": [{"name": r["name"], "ir": hashlib.sha256(Path(r["ir"]["candidate"]).read_bytes()).hexdigest(),
+                               "c": hashlib.sha256(Path(r["c"]["candidate"]).read_bytes()).hexdigest()} for r in results],
+                "model": config["model"], "base_url": config.get("base_url"),
+                "generation": generation_metadata(config),
+                "tests": adapter.config["programs"][adapter.program],
+                "support": [{"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+                            for p in support_dependencies(adapter)]}
+    identity_path = directory / "input_identity.json"
+    if identity_path.exists() and json.loads(identity_path.read_text()) != identity:
+        raise ValueError("Standalone inputs changed; cached integration cannot be accepted or replayed")
+    write_json(identity_path, identity)
     if final_path.exists():
         cached = json.loads(final_path.read_text())
-        if cached.get("accepted") or cached.get("attempts") == config["max_attempts"]:
+        if cached.get("accepted"):
+            validations = {}
+            for kind in ("ir", "c"):
+                old = cached["validation"][kind]
+                root = Path(old["executable"]).parent
+                header = (root / "project.h").read_text()
+                globals_c = (root / "globals.c").read_text().removeprefix('#include "project.h"\n')
+                functions = cached.get("generated_functions") or [
+                    {"name": r["name"], "c_candidate": r["c"]["candidate"], "ir_candidate": r["ir"]["candidate"]}
+                    for r in results]
+                validations[kind] = build_generated_project(adapter, functions, header, globals_c,
+                                                            directory / "revalidation" / kind, kind)
+            if all(v["accepted"] for v in validations.values()):
+                cached["validation"] = validations
+                write_json(final_path, cached)
+                return cached
+        if not cached.get("accepted") and cached.get("attempts") == config["max_attempts"]:
             return cached
     functions = [{"name": r["name"], "c_candidate": r["c"]["candidate"], "ir_candidate": r["ir"]["candidate"]}
                  for r in results]
-    data = binary_data_evidence(adapter.binary, adapter.build / "src" / (adapter.program + ".o"), plan["targets"])
+    data = plan.get("binary_data") or binary_data_evidence(
+        adapter.binary, adapter.build / "src" / (adapter.program + ".o"), plan["targets"])
     write_json(directory / "binary_data.json", data)
     evidence = {"binary_data": data, "functions": [{"name": r["name"], "signature": r["signature"]["signature"],
                 "validated_llvm_ir": Path(r["ir"]["candidate"]).read_text(),
@@ -247,6 +278,9 @@ def recover_standalone(client, config: dict, adapter, plan: dict, results: list[
         "Do not define application functions in globals_c or the header. Any C revision must implement "
         "the provided validated LLVM IR, not delegate to original functions. Do not invent missing target names."
     )
+    if getattr(adapter, "binary_only", False):
+        instruction += (" In this binary-first track, function_replacements MUST be empty. "
+                        "Integration may repair declarations and initializers, not bypass validated IR-to-C functions.")
     feedback = ""
     for attempt in range(config["max_attempts"]):
         root = directory / f"attempt_{attempt}"
@@ -263,17 +297,24 @@ def recover_standalone(client, config: dict, adapter, plan: dict, results: list[
         response_path = root / "response.json"
         if response_path.exists():
             response = json.loads(response_path.read_text())
+        elif (root / "request.json").exists():
+            feedback = "Interrupted integration request consumes an attempt; it is not resent."
+            continue
         else:
             (root / "prompt.txt").write_text(prompt)
-            write_json(root / "generation_config.json", {"model": config["model"], "n": 1,
-                       "temperature": 0, "max_tokens": config.get("max_tokens", 8192), "enable_thinking": False})
-            response = client.chat.completions.create(model=config["model"], n=1, temperature=0,
-                max_tokens=config.get("max_tokens", 8192), messages=[{"role": "user", "content": prompt}],
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}}).model_dump()
+            request_config = with_output_budget(config, budget)
+            write_json(root / "generation_config.json", generation_metadata(request_config))
+            write_json(root / "request.json", {"state": "started", "n": 1})
+            response = generate(client, request_config, prompt, root)
             write_json(response_path, response)
         text = response["choices"][0]["message"]["content"] or ""
         try:
+            finish_reason = response["choices"][0].get("finish_reason")
+            if finish_reason == "length" or str(finish_reason).startswith("degenerate_"):
+                raise ValueError("Incomplete integration response: " + str(finish_reason))
             candidate = json.loads(code_block(text, ("json",)))
+            if getattr(adapter, "binary_only", False) and candidate.get("function_replacements"):
+                raise ValueError("Binary-first integration cannot replace validated C bodies")
             revised = [dict(f) for f in functions]
             for name, body in candidate.get("function_replacements", {}).items():
                 if name not in required:
@@ -288,6 +329,7 @@ def recover_standalone(client, config: dict, adapter, plan: dict, results: list[
         write_json(root / "validation.json", validations)
         if validations.get("ir", {}).get("accepted") and validations.get("c", {}).get("accepted"):
             result = {"accepted": True, "attempts": attempt + 1, "validation": validations,
+                      "generated_functions": revised,
                       "application_source_scaffold": False, "standalone_application_build": True,
                       "complete_project_recovery": False,
                       "remaining_gate": "whole-suite coverage and recovery-scope audit"}

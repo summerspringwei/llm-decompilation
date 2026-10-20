@@ -214,6 +214,11 @@ test.py
 tmp/
 tmp.*
 *.json
+!models/binary_decompilation/configs/coreutils_binary_first.json
+!models/binary_decompilation/configs/coreutils_binary_candidates8.json
+!models/binary_decompilation/configs/coreutils_binary_guided8.json
+!models/binary_decompilation/configs/coreutils_qwen38_remote.json
+!models/binary_decompilation/configs/coreutils_qwen38.json
 tmp_*
 models/gemini/analyze_cfg_exebench.ipynb
 third_party/

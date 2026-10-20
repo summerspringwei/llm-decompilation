@@ -1,0 +1,237 @@
+{
+  "model": "Qwen3.8-27B-FP8",
+  "num_generate": 1,
+  "temperature": 0,
+  "base_url": "http://10.208.130.107:9001/v1",
+  "max_attempts": 10,
+  "max_tokens": 16384,
+  "run_retrieval_ablation": true,
+  "recover_standalone": true,
+  "tokenizer_path": "/data1/xiachunwei/Datasets/Models/Qwen3.8-27B-FP8",
+  "context_window": 131072,
+  "output_dir": "/data1/xiachunwei/Projects/llm-decompilation/validation/project_level_qwen38",
+  "source_dir": "/data1/xiachunwei/Projects/llm-decompilation/third_party/coreutils-9.10",
+  "build_dir": "/data1/xiachunwei/Projects/llm-decompilation/third_party/coreutils-9.10/build-clang-o3",
+  "clang": "/data1/xiachunwei/Software/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04/bin/clang",
+  "ghidra_home": "/data1/xiachunwei/Software/ghidra_11.4.2_PUBLIC",
+  "retrieval": {
+    "embedding_url": "http://127.0.0.1:8125/embed/batch",
+    "qdrant_url": "http://127.0.0.1:6333",
+    "collection_template": "train_synth_rich_io_filtered_{idx}_preprocessed"
+  },
+  "programs": {
+    "basename": {
+      "tests": [
+        "tests/misc/basename.pl"
+      ],
+      "cases": [
+        {
+          "args": [
+            "/usr/bin/sort"
+          ]
+        },
+        {
+          "args": [
+            "foo.txt",
+            ".txt"
+          ]
+        },
+        {
+          "args": [
+            "-a",
+            "/x/a",
+            "/y/b"
+          ]
+        },
+        {
+          "args": [
+            "-s",
+            ".c",
+            "one.c",
+            "two.c"
+          ]
+        },
+        {
+          "args": [
+            "/"
+          ]
+        },
+        {
+          "args": [
+            "///"
+          ]
+        },
+        {
+          "args": [
+            "a///"
+          ]
+        },
+        {
+          "args": [
+            "-z",
+            "abc"
+          ]
+        },
+        {
+          "args": [
+            "--help"
+          ]
+        },
+        {
+          "args": []
+        },
+        {
+          "args": [
+            "--invalid-option"
+          ]
+        }
+      ]
+    },
+    "uniq": {
+      "tests": [
+        "tests/uniq/uniq.pl",
+        "tests/uniq/uniq-collate.sh",
+        "tests/uniq/uniq-perf.sh"
+      ],
+      "cases": [
+        {
+          "args": [],
+          "stdin": "a\na\nb\nb\nc\n"
+        },
+        {
+          "args": [
+            "-c"
+          ],
+          "stdin": "a\na\nb\n"
+        },
+        {
+          "args": [
+            "-d"
+          ],
+          "stdin": "a\na\nb\n"
+        },
+        {
+          "args": [
+            "-u"
+          ],
+          "stdin": "a\na\nb\n"
+        },
+        {
+          "args": [
+            "-i"
+          ],
+          "stdin": "A\na\nb\n"
+        },
+        {
+          "args": [
+            "-f",
+            "1"
+          ],
+          "stdin": "x same\ny same\nz other\n"
+        },
+        {
+          "args": [
+            "-s",
+            "1"
+          ],
+          "stdin": "xsame\nysame\nzother\n"
+        },
+        {
+          "args": [
+            "-w",
+            "2"
+          ],
+          "stdin": "abcd\nabef\nz\n"
+        },
+        {
+          "args": [
+            "--all-repeated=separate"
+          ],
+          "stdin": "a\na\nb\nc\nc\n"
+        },
+        {
+          "args": [
+            "-z"
+          ],
+          "stdin": "a\u0000a\u0000b\u0000"
+        },
+        {
+          "args": [],
+          "stdin": "unterminated"
+        },
+        {
+          "args": [],
+          "stdin": ""
+        },
+        {
+          "args": [
+            "--help"
+          ]
+        },
+        {
+          "args": [
+            "--invalid-option"
+          ]
+        }
+      ]
+    },
+    "df": {
+      "tests": [
+        "tests/df/df-P.sh",
+        "tests/df/df-output.sh",
+        "tests/df/df-symlink.sh",
+        "tests/df/header.sh",
+        "tests/df/no-mtab-status.sh",
+        "tests/df/no-mtab-status-masked-proc.sh",
+        "tests/df/over-mount-device.sh",
+        "tests/df/problematic-chars.sh",
+        "tests/df/skip-duplicates.sh",
+        "tests/df/skip-rootfs.sh",
+        "tests/df/total-unprocessed.sh",
+        "tests/df/total-verify.sh",
+        "tests/df/unreadable.sh"
+      ],
+      "cases": [
+        {
+          "args": [
+            "--help"
+          ]
+        },
+        {
+          "args": [
+            "--invalid-option"
+          ]
+        },
+        {
+          "args": [
+            "--output=source,target",
+            "/"
+          ]
+        },
+        {
+          "args": [
+            "--output=source,fstype,target",
+            "/"
+          ]
+        },
+        {
+          "args": [
+            "--output=not-a-field"
+          ]
+        },
+        {
+          "args": [
+            "--output",
+            "-P"
+          ]
+        },
+        {
+          "args": [
+            "/nonexistent-llm-decompilation-test-path"
+          ]
+        }
+      ]
+    }
+  },
+  "api_key_env": "QWEN_PROJECT_API_KEY"
+}

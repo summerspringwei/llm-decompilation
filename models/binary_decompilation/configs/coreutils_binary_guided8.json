@@ -1,0 +1,12 @@
+{
+  "extends": "coreutils_binary_candidates8.json",
+  "output_dir": "/data1/xiachunwei/Projects/llm-decompilation/validation/project_level_binary_v4_guided8",
+  "evidence_cache": "/data1/xiachunwei/Projects/llm-decompilation/validation/project_level_binary_v3_candidates8",
+  "guided_decompilation": true,
+  "compiler_analysis": true,
+  "enable_thinking": false,
+  "stage_enable_thinking": {},
+  "request_timeout": 600,
+  "service_health_timeout": 60,
+  "experiment_description": "Fresh generations; same binaries, tests, retrieval settings, n=8 and ten rounds. Guided artifact-only procedure, binary CFG/layout facts, LLVM normalization, corrected diagnostics and bounded transport recovery. Bundled intervention, not a model-capability or single-factor causal comparison."
+}
